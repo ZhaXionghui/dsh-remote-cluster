@@ -1,0 +1,38 @@
+{
+  "name": "dsh-remote-cluster",
+  "version": "0.1.1",
+  "description": "DSH profile bundle: wire HSAgent's remote-cluster (HPC) MCP tools into DeepSeek Harness",
+  "keywords": [
+    "dsh",
+    "dsh-bundle",
+    "mcp",
+    "hsagent",
+    "hpc",
+    "cluster"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "main": "lib/index.js",
+  "files": [
+    "lib/index.js",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ZhaXionghui/dsh-remote-cluster.git"
+  },
+  "homepage": "https://github.com/ZhaXionghui/dsh-remote-cluster",
+  "bugs": {
+    "url": "https://github.com/ZhaXionghui/dsh-remote-cluster/issues"
+  },
+  "engines": {
+    "node": "^22.19 || >=24"
+  }
+}

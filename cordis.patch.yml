@@ -1,0 +1,41 @@
+# =============================================================================
+# dsh-remote-cluster — DSH profile bundle patch layer.
+#
+# DSH only *starts* an MCP server; it never installs one. Before enabling this
+# bundle you must have HSAgent installed with Python >= 3.11:
+#
+#   pip install hsagent-platform
+#
+# so that the `hsagent-bridge` console script lands on PATH. That script is
+# declared upstream at hsagent-platform/pyproject.toml:13
+# (`hsagent-bridge = "hsagent_bridge.__main__:main"`) and its `serve`
+# subcommand is defined at hsagent_bridge/__main__.py:40-41 with a stdio-only
+# transport default; it falls through to `create_server()` + `mcp.run(transport
+# = "stdio")` at hsagent_bridge/__main__.py:81-85, exposing the whole HPC tool
+# set declared in hsagent_bridge/server.py (hpc_login, hpc_status, hpc_logout,
+# execute_hpc_command, upload_hpc_file, download_hpc_file, submit_hpc_job,
+# relay_status, trace_begin_session, trace_finish_session, trace_flush_cached).
+#
+# Platform adaptation — HSAgent drives SSH through ControlMaster and does not
+# support native Windows, so on win32 the server is launched inside WSL:
+#
+#   linux/darwin : hsagent-bridge serve
+#   win32        : wsl hsagent-bridge serve
+#
+# On win32 this requires hsagent-platform to be pip-installed *inside the WSL
+# distro*, with `hsagent-bridge` resolvable on that distro's PATH.
+#
+# Why the expressions are quoted: a `!!js` ternary contains `: `, which YAML
+# would otherwise take as a key separator and silently parse the row into a
+# mapping. The single-quoted scalar keeps the expression intact; verified
+# through `loadOverlayPatches` + `interpolate` on both platforms.
+# =============================================================================
+- insert:
+    - id: hsagent-mcp
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: hsagent
+        transport: stdio
+        command: !!js 'process.platform === "win32" ? "wsl" : "hsagent-bridge"'
+        args: !!js 'process.platform === "win32" ? ["hsagent-bridge", "serve"] : ["serve"]'
+        cwd: !!js process.cwd()
