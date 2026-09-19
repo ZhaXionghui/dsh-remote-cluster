@@ -1,0 +1,8 @@
+node_modules/
+*.tgz
+*.log
+.DS_Store
+Thumbs.db
+
+# Local verification artifacts (temporary DSH_HOME / probe scratch dirs)
+.tmp-*/

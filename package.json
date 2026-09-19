@@ -1,0 +1,40 @@
+{
+  "name": "dsh-remote-cluster",
+  "version": "0.1.0",
+  "description": "DSH profile bundle: a declarative cluster-inventory and configuration layer for the DSH remote-host (SSH) capability",
+  "keywords": [
+    "dsh",
+    "dsh-bundle",
+    "remote-host",
+    "ssh",
+    "cluster",
+    "hpc",
+    "controlmaster"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "main": "lib/index.js",
+  "files": [
+    "lib/index.js",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE",
+    "docs"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ZhaXionghui/dsh-remote-cluster.git"
+  },
+  "homepage": "https://github.com/ZhaXionghui/dsh-remote-cluster",
+  "bugs": {
+    "url": "https://github.com/ZhaXionghui/dsh-remote-cluster/issues"
+  },
+  "engines": {
+    "node": "^22.19 || >=24"
+  }
+}
