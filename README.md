@@ -49,7 +49,7 @@
 
 ### 📍 术语：`DSH_HOME` 是什么
 
-`DSH_HOME` 是 DSH 存放全部用户数据（profile、配置、会话等）的**单一根目录**，profiler 目录就是 `$DSH_HOME/profiles/<profile名>/`。
+`DSH_HOME` 是 DSH 存放全部用户数据（profile、配置、会话等）的**单一根目录**，profile 目录就是 `$DSH_HOME/profiles/<profile名>/`。
 
 - **默认值**：`~/.dsh`（即用户家目录下的 `.dsh`）；
 - **优先级**：显式配置 > 环境变量 `$DSH_HOME` > 默认 `~/.dsh`（源码 `packages/util/home-paths/src/index.ts:87-91`，默认Home 定义在同文件 `:61-63`）；
@@ -90,26 +90,79 @@ Windows 上的前置条件（多一步）：
 
 ## 📦 安装
 
-一条命令，装进指定 profile（`hsagent` 请替换成你自己的 profile 名）：
+`dsh plugin --profile <名字> add <spec>` 会把参数转发给 profile 目录里的 pnpm，所以**任何 pnpm 支持的 spec 形态都能用**。下面是四种常用形态（`hsagent` 请替换成你自己的 profile 名）。
+
+| 形态 | 用途 |
+|------|------|
+| 1. GitHub 简写 | 日常安装，推荐 |
+| 2. 完整 git URL | GitCode 镜像，或需要显式 URL 时 |
+| 3. 本地路径 | 改本 bundle 源码后即时验证 |
+| 4. npm 包名 | 本包发布到 registry 之后 |
+
+### 1. GitHub 简写（推荐，最短）
 
 ```bash
-dsh plugin --profile hsagent add 'git+https://github.com/ZhaXionghui/dsh-remote-cluster.git#dsh-plugin-v0.1.1'
+dsh plugin --profile hsagent add github:ZhaXionghui/dsh-remote-cluster#dsh-plugin-v0.1.1
 ```
 
-GitCode 镜像（国内网络备选）：
+`#` 后面可以接 **tag / 分支名 / commit sha**：
+
+```bash
+dsh plugin --profile hsagent add github:ZhaXionghui/dsh-remote-cluster#dsh-plugin          # 跟分支走（滚动更新）
+dsh plugin --profile hsagent add github:ZhaXionghui/dsh-remote-cluster#dsh-plugin-v0.1.1   # 锁 tag（推荐用于生产）
+dsh plugin --profile hsagent add github:ZhaXionghui/dsh-remote-cluster#<commit-sha>        # 锁 commit（最严格）
+```
+
+> 🔒 **建议锁 commit sha。** tag 和分支在远端都可能被重新指向别的提交——只有 sha 能保证「你运行的就是你审过的那份代码」。tag 便于阅读，sha 才是承诺。
+
+### 2. 完整 git URL（GitCode 镜像 / 需要显式 URL 时）
+
+国内网络可走 GitCode 镜像：
 
 ```bash
 dsh plugin --profile hsagent add 'git+https://gitcode.com/ZhaXionghui/dsh-remote-cluster.git#dsh-plugin-v0.1.1'
 ```
 
-也可以跟分支走（滚动更新，不推荐用于生产）：
+GitHub 的完整写法同理（与形态 1 等价，只是更啰嗦）：
 
 ```bash
-dsh plugin --profile hsagent add 'git+https://github.com/ZhaXionghui/dsh-remote-cluster.git#dsh-plugin'
+dsh plugin --profile hsagent add 'git+https://github.com/ZhaXionghui/dsh-remote-cluster.git#dsh-plugin-v0.1.1'
 ```
 
-> 💡 为什么不用 `npm install`？
-> 本 bundle **故意**做成零依赖、零构建的纯 patch 包。`dsh plugin add` 是 pnpm 的薄转发层，git 依赖拉的是源码；一旦包里带 `prepare` / `build` 脚本，pnpm ≥ 10 的 `allowBuilds` 会直接拦截安装。所以这里 `lib/index.js` 只有一行 `export {}`，装完即用、无需任何 allowBuilds 配置。
+> 关于引号：`#` 处于词中时，bash / zsh 都不会把它当作注释起始（实测 `git+https://example.com/x.git#tag` 原样传递），所以不加引号通常也能工作。这里加引号是防御性写法——一旦 `#` 前面出现空格，它就会被当成注释，后面的 ref 会被悄悄丢掉。
+
+### 3. 本地开发安装
+
+从本仓库目录下装，pnpm 会建立 **link**（改动源码立即生效，不拷贝）：
+
+```bash
+dsh plugin --profile hsagent add /绝对路径/dsh-remote-cluster
+```
+
+`file:` 前缀等价写法：
+
+```bash
+dsh plugin --profile hsagent add file:/绝对路径/dsh-remote-cluster
+```
+
+### 4. 发布到 npm 之后
+
+本包发布到 registry 后，直接装包名即可（无需 `#` 后缀）：
+
+```bash
+dsh plugin --profile hsagent add dsh-remote-cluster
+```
+
+### ✅ 为什么本包不需要 `allowBuilds`
+
+DSH 官方文档在 [Installing from GitHub](https://github.com/deepseek-ai/deepseek-harness/blob/main/docs/user/develop/basic/publish.md) 一节里描述了一个常见坑：**git 安装拉取的是源码而非构建产物**，所以带 `prepare` / `build` 脚本的包会被 pnpm ≥ 10 拦下——用户必须在该 profile 的 `pnpm-workspace.yaml` 里手工加一条 `allowBuilds` 放行后重装，而这条授权实质上等于「允许该包在安装时于你机器上执行代码」。这也是为什么用户会看到不少 DSH 插件包的安装说明里要写两遍命令。
+
+**本 bundle 不属于这类**，两个字面上都不需要：
+
+- **零构建脚本** —— `package.json` 里没有 `scripts.prepare` / `scripts.install` / `scripts.build`，也就没有东西可被 pnpm 拦截；
+- **零依赖** —— 不拉任何传递依赖，`lib/index.js` 只有一行 `export {}`，`lib/` 本身就是最终产物，不经过编译。
+
+所以四种形态都是**一条命令一步装完**，不需要 `allowBuilds`，也不需要额外的「再跑一次」。这也是纯 patch bundle 架构（行为全部由 `cordis.patch.yml` 声明，不写 JS 逻辑）带来的直接好处。
 
 ---
 
@@ -144,8 +197,15 @@ dsh --profile hsagent --dump-default-config
 ```
 
 > ⚠️ **注意：`command` / `args` 在这里显示的是未求值的 `!!js` 表达式，不是算好的命令。**
-> `--dump-default-config` 只做「合成」，不执行 `!!js`（`dump-config.ts:3-4` 明确不求值）；真正的求值发生在 Loader 加载时，届时才会按你所在平台变成 `hsagent-bridge serve` 或 `wsl hsagent-bridge serve`。
-> 换言之：**在任何平台上，`--dump-default-config` 的输出都长得跟上面一模一样**。如果你看到的是已经算好的命令，那是 `--dump-config`（不带 `default`）叠加了别的层，不是这个 bundle 本身。
+> dump 这条路**永远不会**给你算好的值——`--dump-config` 与 `--dump-default-config` 走的是同一个函数（`apps/cli/src/dump-config.ts:30`），其模块文档明确写着 compose **"without booting or evaluating `!!js`"**（同文件 `:2-5`）。真正的求值只发生在 Loader 加载配置时，届时才会按你所在平台变成 `hsagent-bridge serve` 或 `wsl hsagent-bridge serve`。
+> 两个 flag 的区别**只在包含的层数**，不在求值（`dump-config.ts:36-49`）：
+>
+> | flag | 包含的层 |
+> |------|----------|
+> | `--dump-default-config` | 只有 bundle 层（不含用户层，用于排查坏掉的 `cordis.patch.yml`） |
+> | `--dump-config` | bundle 层 + profile 自己的 `cordis.patch.yml` + home 级 patch + 各 `--patch` overlay |
+>
+> 所以：**在任何平台上、用哪个 flag，`!!js` 都是原样打印**。想看求值后的实际命令，只能真正 boot 一次（或读运行日志），dump 拿不到。
 
 **3. 确认 MCP server 本体能起来（不经过 DSH）**
 
