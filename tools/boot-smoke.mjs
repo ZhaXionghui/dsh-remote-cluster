@@ -25,7 +25,11 @@
  * Since 0.2.0 a third state boots a profile with the base `remote-hosts` row
  * turned OFF (a dsh without the remote-host subsystem). The loud-fail guard
  * must then keep the process from starting: exit != 0 with a boot audit naming
- * the guard and the missing `remoteHosts` service.
+ * the guard and the missing `remoteHosts` service. That state also asserts the
+ * guard's OWN audited pending row via a line-anchored match (not a loose
+ * substring), the audit's blast radius is >= 2 pending rows, and the reported
+ * `N entries did not activate` count equals the number of pending rows printed
+ * — so removing the guard row from the patch turns the state red at runtime.
  *
  * Run: node tools/boot-smoke.mjs
  */
@@ -271,6 +275,40 @@ const main = async () => {
     check('[无 remote-host 接缝] stderr 含 "did not activate"', run.stderr.includes('did not activate'))
     check('[无 remote-host 接缝] stderr 含 "waiting for service: remoteHosts"', run.stderr.includes('waiting for service: remoteHosts'))
     check('[无 remote-host 接缝] stderr 点名守卫模块 dsh-remote-cluster/lib/guard.js', run.stderr.includes('dsh-remote-cluster/lib/guard.js'))
+    // ── Anchored assertions (post-QA gap) ────────────────────────────────────
+    // The five substring assertions above are TOO LOOSE: the first three pass
+    // even if the guard row is removed entirely, because a dsh lacking the
+    // `remoteHosts` provider already leaves `remote-hosts-ssh` and
+    // `tool-remote-host` (or `remote-host-controller` on the web line) PENDING,
+    // so boot fails loudly anyway. Only an assertion that pins the guard's OWN
+    // audited row can catch a "guard removed" regression at runtime. We use a
+    // LINE-ANCHORED match (`^...$` + `m`) so the whole pending record must be
+    // present as its own line — not merely a substring mentioned elsewhere.
+    check(
+      '[无 remote-host 接缝] 审计逐行含守卫的 pending 行（守卫确为被审计的 PENDING entry 之一）',
+      /^dsh-remote-cluster\/lib\/guard\.js: pending \(waiting for service: remoteHosts\)$/mu.test(run.stderr),
+    )
+    // The audit explodes over the FULL blast radius of the missing service, not
+    // just the guard: every consumer of `remoteHosts` is listed. We assert the
+    // blast radius is ≥ 2 pending rows (the guard plus at least one upstream
+    // consumer) WITHOUT hard-coding the exact count — the count is a function of
+    // the profile's composition (see README's guard section), so it must not be
+    // pinned here.
+    const pendingRows = run.stderr.match(/^\S+: pending \(waiting for service: remoteHosts\)$/gmu) ?? []
+    check(
+      '[无 remote-host 接缝] 审计列出 ≥ 2 条 pending 行（同一病灶的完整爆炸半径）',
+      pendingRows.length >= 2,
+    )
+    // The `N entries did not activate` count must be consistent with (i.e. equal
+    // to) the number of pending rows actually printed — proving the audited rows
+    // are exactly the ones counted, not a partial listing. Extracted dynamically,
+    // never hard-coded.
+    const countMatch = run.stderr.match(/(\d+) entries did not activate/u)
+    const auditedCount = countMatch ? Number(countMatch[1]) : NaN
+    check(
+      '[无 remote-host 接缝] "N entries did not activate" 的 N 与 pending 行数一致',
+      Number.isFinite(auditedCount) && auditedCount === pendingRows.length && auditedCount >= 2,
+    )
     if (run.code === 0 || run.timedOut) {
       console.log(`       exit=${run.code} timedOut=${run.timedOut}`)
       console.log(`       stderr: ${run.stderr.trim()}`)
