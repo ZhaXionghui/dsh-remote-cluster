@@ -5,7 +5,7 @@
 **把 DSH 原生的 remote-host（远程主机 / 集群）能力，以「集群清单 / 配置层」的形式接入 base-backed profile 的纯 patch bundle。**
 
 [![dsh bundle](https://img.shields.io/badge/dsh-bundle-4f46e5.svg)](https://github.com/deepseek-ai/deepseek-harness)
-[![Version](https://img.shields.io/badge/version-0.1.0-blue.svg)](https://github.com/ZhaXionghui/dsh-remote-cluster)
+[![Version](https://img.shields.io/badge/version-0.2.0-blue.svg)](https://github.com/ZhaXionghui/dsh-remote-cluster)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%5E22.19%20%7C%20%3E%3D24-brightgreen.svg)](https://nodejs.org)
 
@@ -17,9 +17,12 @@
 
 ## 这是什么
 
-`dsh-remote-cluster` 是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）的一个 **profile bundle**。它**不含任何业务逻辑**——整个包里唯一的实质内容是一份 `cordis.patch.yml`，是一个**只有一层、只有一条 id-targeted 行**的 patch。
+`dsh-remote-cluster` 是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）的一个 **profile bundle**。它**不含任何业务逻辑**——实质内容只有一份 `cordis.patch.yml`，是一份**只有一层**的 patch。
 
-它做的事只有一件：把 base bundle 里 `remote-hosts-ssh` 那一行的中性默认 `hosts: []`，替换成「由环境变量供给的集群清单」，同时**原样重述** base 的另外三个默认值。
+它做两件事：
+
+1. 把 base bundle 里 `remote-hosts-ssh` 那一行的中性默认 `hosts: []`，替换成「由环境变量供给的集群清单」，同时**原样重述** base 的另外三个默认值；
+2. （**0.2.0 起**）insert 一行守卫插件 `remote-cluster-guard`，它在目标 dsh 缺少 remote-host 子系统时让 boot **响亮失败**，而不是静默 no-op（见[守卫插件](#-守卫插件020-起)）。
 
 ```
 DSH profile 的层序（后者胜，同 id 行逐层覆盖）
@@ -30,13 +33,14 @@ DSH profile 的层序（后者胜，同 id 行逐层覆盖）
     tool-remote-host: disabled: true（改由 standard preset 启用）
   dsh-remote-cluster           ← 本包（out-of-tree，reconcile 追加到 bundles 末尾）
     id: remote-hosts-ssh → config.hosts = DSH_REMOTE_CLUSTER_HOSTS
+    insert: remote-cluster-guard（inject: ['remoteHosts']，子系统缺失时响亮失败）
   用户层                       ← 仍在最上面
     profiles/<p>/cordis.patch.yml · $DSH_HOME/cordis.patch.yml · --patch
 ────────────────────────────────────────────────────────────────────────
   生效配置 → Loader 挂载（`!!js` 表达式在此刻求值）
 ```
 
-> 本层**不** insert 任何 in-box 已存在的行 id，也**不**声明 `tool-remote-host`——见[目录结构](#-目录结构)与 `cordis.patch.yml` 文件头的注释说明。
+> 本层**不** insert 任何 in-box 已存在的行 id（唯一 insert 的 `remote-cluster-guard` 在 base 里不存在），也**不**声明 `tool-remote-host`——见[目录结构](#-目录结构)与 `cordis.patch.yml` 文件头的注释说明。
 
 ---
 
@@ -54,33 +58,102 @@ DSH profile 的层序（后者胜，同 id 行逐层覆盖）
 
 ### 在缺少该子系统的 dsh 上会发生什么
 
-**不会崩溃，也不会报错——能力静默不生效。** 逐条对齐权威语义（`vendor/include/src/index.ts:110-114`）：
+**0.1.0：静默 no-op。** **0.2.0 起：启动即响亮失败（exit 1）。** 逐条对齐权威语义：
 
-1. 本层唯一那条 patch 是 id-targeted 的（没有 `insert`）；
+1. 本层那条 `remote-hosts-ssh` override 是 id-targeted 的（没有 `insert`）；
 2. Loader 按 `id` 找目标行 `remote-hosts-ssh`；
-3. 该 patch 被**跳过**（`vendor/include/src/index.ts:110-114`），boot 照常成功（exit 0）；
-4. Loader 会经 `loader` 命名空间记一条 warn 级日志（`patch: entry remote-hosts-ssh not found`）——
-   **但 dsh 默认日志级别只导出 `error` 与 `info`，这条 warn 默认既不上 stderr 也不进日志缓冲。**
-   因此「没看到这条警告」**不能**当作「这一行没被跳过」；要看它必须调高日志级别。
+3. 找不到时该 patch 被**跳过**（`vendor/include/src/index.ts:110-114`）；
+4. 同时，本层 insert 的守卫行 `remote-cluster-guard` 声明了 `inject: ['remoteHosts']`。子系统缺失 → 该 service 无人提供 → 守卫的 fiber 停在 PENDING（`vendor/cordis/src/fiber.ts:597-621`）→ boot 审计 `assertEntriesActivated`（`packages/boot/app-boot/src/index.ts:707-738`）把**所有** PENDING 行（不止守卫，见下）一并列出并抛出 → boot 包一层 `plugin tree failed to load`（同文件 `:788`/`:816`）→ **进程 exit 1**。
 
-   > 源码依据：`vendor/cordis/src/logger.ts:22-27` 定义 `LoggerLevel { ERROR=0, INFO=1, WARN=2, DEBUG=3 }`；
-   > `:155-156` 处 `targetLevel = exporter.levels?.[name] ?? exporter.levels?.default ?? this.level ?? LoggerLevel.INFO;`
-   > `if (targetLevel < level) continue` —— 默认级别是 INFO(1)、而 warn 是 2，故 warn 被丢弃。
-   > （构建产物里同一逻辑见 `vendor/cordis/lib/types/logger.js:89-95`。）
+**逐字实测**（构造一个把 base `remote-hosts` 行 `disabled: true` 的 profile）：见 [守卫插件（0.2.0 起）](#-守卫插件020-起) 一节的 stderr 原文。
 
-所以**把「你的 dsh 是否含 remote-host 子系统」当作安装前的第一道检查项**：
+> **为什么 id-targeted 跳过本身仍是静默的？** 那条 `remote-hosts-ssh` 找不到目标行时 Loader 只记一条 warn 级日志（`patch: entry remote-hosts-ssh not found`，`vendor/include/src/index.ts:110-114`）——**而 dsh 默认日志级别只导出 `error` 与 `info`，这条 warn 默认既不上 stderr 也不进日志缓冲。** 所以「没看到这条警告」**不能**当作「这一行没被跳过」。
+>
+> > 源码依据：`vendor/cordis/src/logger.ts:22-27` 定义 `LoggerLevel { ERROR=0, INFO=1, WARN=2, DEBUG=3 }`；
+> > `:155-156` 处 `targetLevel = exporter.levels?.[name] ?? exporter.levels?.default ?? this.level ?? LoggerLevel.INFO;`
+> > `if (targetLevel < level) continue` —— 默认级别是 INFO(1)、而 warn 是 2，故 warn 被丢弃。
+> > （构建产物里同一逻辑见 `vendor/cordis/lib/types/logger.js:89-95`。）
+>
+> 真正**响亮**的那条信号来自守卫插件（`inject` 缺失 → PENDING → `assertEntriesActivated`），而不是这条 warn。这就是 0.2.0 加守卫的原因：把「静默 no-op」变成「启动即失败」。
+
+所以**把「你的 dsh 是否含 remote-host 子系统」当作安装前的第一道检查项**。三条互补的判据，从最省事到最直接：
 
 ```bash
-# 1) 看 profile 的安装闭包里有没有这三个包（在 profile 目录里执行）
+# 1) 最省事：合成后的配置树里有没有 remote-hosts 这一行（源码线期望命中 10 行，npm 线 0 行）
+dsh web --dump-config | grep -c remote-host
+
+# 2) 看特定行的来源注释里有没有 dsh-remote-cluster
+dsh --profile <profile名> --dump-default-config | grep -n remote-hosts-ssh
+
+# 3) 看 profile 的安装闭包里有没有这三个包（在 profile 目录里执行）
 ls "$DSH_HOME/profiles/<profile名>/node_modules/@deepseek-ai/" | grep remote-host
 # 期望看到：dsh-host-remote-host / dsh-host-remote-host-ssh / dsh-tool-remote-host
-
-# 2) 看合成后的配置树里有没有 remote-hosts-ssh 这一行
-dsh --profile <profile名> --dump-default-config | grep -n remote-hosts-ssh
-# 没有输出 ⇒ 该 dsh 不含 remote-host 子系统，本包装了也是 no-op
 ```
 
-> 注：第 2 条命令在「dsh 不含远程主机子系统」时**也会（因为 base 就没有这一行）**没有输出；含有该子系统的 dsh 一定能看到这一行。这就是最省事的判据。
+> ⚠️ 三条 `--dump-*` 命令都**不求值** `!!js`（见[验证](#-验证)第 2 步的说明），它们只回答「这一行在不在、来自哪一层」，**不**回答「清单求值成了什么」。
+> 注：第 2 条在「dsh 不含远程主机子系统」时**也会（因为 base 就没有这一行）**没有输出；含有该子系统的 dsh 一定能看到这一行。
+
+---
+
+## 🛡 守卫插件（0.2.0 起）
+
+从 **0.2.0** 开始，本包除了那条 `remote-hosts-ssh` override，还 insert 一行守卫插件：
+
+```yaml
+- insert:
+    - id: remote-cluster-guard
+      name: dsh-remote-cluster/lib/guard.js
+```
+
+它对应的 `lib/guard.js` 只声明了一件事——**依赖 remote-host 的服务**：
+
+```js
+export const name = 'remote-cluster-guard'
+export const inject = ['remoteHosts']
+export function apply() {}
+```
+
+`remoteHosts` service 由 `@deepseek-ai/dsh-host-remote-host` 提供（base bundle 的一行）。**子系统缺失时**这个 service 无人提供 → 守卫的 fiber 停在 PENDING → boot 审计把所有 PENDING 行列出并让进程**非 0 退出**。
+
+### 子系统缺失时你会看到什么（逐字实测）
+
+构造一个把 base `remote-hosts` 行 `disabled: true` 的 profile 真跑一次（`dsh --profile <p> --no-open --host 127.0.0.1 --port 0`），**完整 stderr 原文**如下（未加工）：
+
+```
+file:///D:/Dev/deepseek-harness/packages/boot/app-boot/lib/index.js:1511
+		throw new Error(`${binName}: ${stage}: ${detail}${stack}`, { cause });
+		      ^
+
+Error: dsh: plugin tree failed to load: dsh: 3 entries did not activate
+@deepseek-ai/dsh-host-remote-host-ssh: pending (waiting for service: remoteHosts)
+@deepseek-ai/dsh-tool-remote-host: pending (waiting for service: remoteHosts)
+dsh-remote-cluster/lib/guard.js: pending (waiting for service: remoteHosts)
+    at boot (file:///D:/Dev/deepseek-harness/packages/boot/app-boot/lib/index.js:1511:9)
+    at async runProfile (file:///D:/Dev/deepseek-harness/apps/cli/lib/profile-boot-BTzzdrGY.js:261:14)
+    at async file:///D:/Dev/deepseek-harness/apps/cli/lib/bin.js:130:3 {
+  [cause]: Error: dsh: 3 entries did not activate
+  @deepseek-ai/dsh-host-remote-host-ssh: pending (waiting for service: remoteHosts)
+  @deepseek-ai/dsh-tool-remote-host: pending (waiting for service: remoteHosts)
+  dsh-remote-cluster/lib/guard.js: pending (waiting for service: remoteHosts)
+      at assertEntriesActivated (file:///D:/Dev/deepseek-harness/packages/boot/app-boot/lib/index.js:1458:9)
+      at boot (file:///D:/Dev/deepseek-harness/packages/boot/app-boot/lib/index.js:1503:9)
+      at async runProfile (file:///D:/Dev/deepseek-harness/apps/cli/lib/profile-boot-BTzzdrGY.js:261:14)
+      at async file:///D:/Dev/deepseek-harness/apps/cli/lib/bin.js:130:3
+}
+
+Node.js v22.22.2
+```
+
+退出码 **1**（stdout 为空）。要点：
+
+- `dsh:` 前缀出现**两次**——一次在 `plugin tree failed to load: dsh: 3 entries did not activate`（boot 包装层），一次在 `[cause]: Error: dsh: 3 entries did not activate`（审计层的原始错误）；
+- PENDING 列表里除了本包的守卫，还有 `remoteHosts` 的**其它既有消费者**（`@deepseek-ai/dsh-host-remote-host-ssh`、以及工具面 `@deepseek-ai/dsh-tool-remote-host`；web profile 下是 `@deepseek-ai/dsh-api-remote-host-controller`）。因此条数是**上游消费者数量的函数**，会随 profile 组态变化——守卫只是让这个本就存在的故障**显性化**，并非新增故障；
+- 我们的模块名逐字出现：`dsh-remote-cluster/lib/guard.js: pending (waiting for service: remoteHosts)`（`entry.options.name` 是 patch 里写的**原始字符串**，故显示为裸包名+子路径）。
+- `at boot ...` 与 `[cause]` 段是 Node 打印 Error（含 `cause`）的标准形态，**确实**会打印。
+
+### 它不会误伤健康安装
+
+在**健康的 web profile** 上守卫**正常激活、不会报错**：`remote-hosts` 由 base 提供 `remoteHosts`，而 `dsh-web-app` 只碰 `remote-host-controller`、`ui-remote-host`、`tool-remote-host` 三个**别的**行，**从不**碰提供 `remoteHosts` 的 `remote-hosts`（`packages/bundle/base/cordis.patch.yml:90-91`）。`tools/boot-smoke.mjs` 的「env 已设 / 未设」两态正是在验证这一点：健康链上 boot 照常 exit 0。
 
 ---
 
@@ -91,17 +164,17 @@ dsh --profile <profile名> --dump-default-config | grep -n remote-hosts-ssh
 ### 1. GitHub 简写（推荐，最短）
 
 ```bash
-dsh plugin --profile <profile名> add github:ZhaXionghui/dsh-remote-cluster#dsh-remote-cluster-v0.1.0
+dsh plugin --profile <profile名> add github:ZhaXionghui/dsh-remote-cluster#dsh-remote-cluster-v0.2.0
 ```
 
 ### 2. 完整 git URL（GitCode 镜像 / 需要显式 URL 时）
 
 ```bash
 # GitHub
-dsh plugin --profile <profile名> add 'git+https://github.com/ZhaXionghui/dsh-remote-cluster.git#dsh-remote-cluster-v0.1.0'
+dsh plugin --profile <profile名> add 'git+https://github.com/ZhaXionghui/dsh-remote-cluster.git#dsh-remote-cluster-v0.2.0'
 
 # GitCode 镜像（国内网络）
-dsh plugin --profile <profile名> add 'git+https://gitcode.com/ZhaXionghui/dsh-remote-cluster.git#dsh-remote-cluster-v0.1.0'
+dsh plugin --profile <profile名> add 'git+https://gitcode.com/ZhaXionghui/dsh-remote-cluster.git#dsh-remote-cluster-v0.2.0'
 ```
 
 ### 3. 本地路径（改本 bundle 源码后即时验证）
@@ -123,7 +196,7 @@ dsh plugin --profile <profile名> add dsh-remote-cluster
 
 ```bash
 ... add github:ZhaXionghui/dsh-remote-cluster#main                          # 跟分支走（滚动更新）
-... add github:ZhaXionghui/dsh-remote-cluster#dsh-remote-cluster-v0.1.0     # 锁 tag
+... add github:ZhaXionghui/dsh-remote-cluster#dsh-remote-cluster-v0.2.0     # 锁 tag（0.1.0 的历史 tag 仍可用）
 ... add github:ZhaXionghui/dsh-remote-cluster#<commit-sha>                  # 锁 commit
 ```
 
@@ -233,6 +306,15 @@ dsh --profile <profile名> --dump-default-config | grep -n -A 8 remote-hosts-ssh
 ```
 
 应能看到 `remote-hosts-ssh` 那一行，且它的来源注释里包含 `dsh-remote-cluster`——注释形式为 `# == <贡献该行的文件>, patched by <打过它的层...>`（`packages/boot/app-boot/src/index.ts:477-479`）。
+
+**如果目标行不存在，dump 会直接把那条「跳过」警告打到 stderr**（这是最直观的诊断信号，比之前文中只提的「调高日志级别」实用得多）。逐字实测——对一个不含 `remote-hosts-ssh` 这一行的 profile 执行 dump：
+
+```
+$ dsh --profile <p> --dump-config            # 或 --dump-default-config，两者都会打
+dsh: [dsh-remote-cluster] patch: entry "remote-hosts-ssh" not found
+```
+
+注意三点：① 它走 **stderr** 而不是 stdout，所以 `... | grep` 抓不到，要看 stderr（或 `2>&1`）；② 前缀 `[dsh-remote-cluster]` 表明是**本层**那条 patch 被跳过；③ id 是**带引号**的 `"remote-hosts-ssh"`（与 0.1.0 里引用的 loader 内部 warn 文案 `patch: entry remote-hosts-ssh not found` 差一对引号——dump 这条来自 `composeEntries` 的包装，`packages/boot/app-boot/src/index.ts:854-861`）。**两个 dump flag 都会打这条警告**，区别只在包含的层数。
 
 **① 你在 `cordis.patch.yml` 里写的形式**（单引号单行——不引号的话，三元表达式里的 `: ` 会被 YAML 当成键分隔符而静默解析成 mapping）：
 
@@ -348,9 +430,15 @@ DSH 官方文档在 [Installing from GitHub](https://github.com/deepseek-ai/deep
 按顺序排查四步：
 
 1. `cat "$DSH_HOME/profiles/<p>/package.json"` → `dsh.profile.bundles` 里有没有 `"dsh-remote-cluster"`；
-2. `dsh --profile <p> --dump-default-config | grep -n -A 8 remote-hosts-ssh` → 有没有这一行、来源注释里有没有 `dsh-remote-cluster`。**没有这一行 ⇒ 你的 dsh 不含 remote-host 子系统**（见[前置条件](#-前置条件最重要)）；
-3. 要确认这一行是否被跳过，**用第 2 步的 `--dump-default-config`**，不要指望 boot 日志——默认日志级别看不到那条 warn（见[前置条件](#-前置条件最重要)）；
+2. `dsh --profile <p> --dump-config | grep -n -A 8 remote-hosts-ssh` → 有没有这一行、来源注释里有没有 `dsh-remote-cluster`。**没有这一行 ⇒ 你的 dsh 不含 remote-host 子系统**（见[前置条件](#-前置条件最重要)）；
+3. 要确认这一行是否被**跳过**，看 `dsh --profile <p> --dump-config` 的 **stderr** 有没有直接打出那条 warn：
+   ```
+   dsh: [dsh-remote-cluster] patch: entry "remote-hosts-ssh" not found
+   ```
+   这是最直观的一条：dump 走的是与 boot 同一条 `composeEntries` 路径，同一条 warn 照样发到 stderr（id 是**带引号**的、前面带 `[层名]` 前缀）。**别指望 boot 日志**——默认日志级别下那条 warn 不显示（见[前置条件](#-前置条件最重要)）；
 4. 有这一行但还是空清单 ⇒ 检查 `DSH_REMOTE_CLUSTER_HOSTS` 是不是**在启动 dsh 的那个进程环境里**设的（profile 的 `.env` 与环境变量不同源）。**`hosts` 必须是 JSON 数组**——除 `null`（与未设置等价，回落 `[]`）之外，非数组与非法 JSON 都会让 boot **fail-loud**（exit 1）；报错文案见下表。
+
+> ⚠️ `--dump-config` / `--dump-default-config` 都是**只 dump、不 boot**：`!!js` 表达式**逐字原样打印、不求值**（见 `apps/cli/src/dump-config.ts` 模块注释与 `app-boot/src/index.ts:362-372`）。所以两个 dump 命令**都不会**因为 `!!js` 求值失败而报错——想验证 `!!js` 本身，只能真 boot。
 
 **清单取值逐例实测**（真实 boot，`dsh --profile <p> --no-open --host 127.0.0.1 --port 0`）。下表第一列 `X` 表示 `DSH_REMOTE_CLUSTER_HOSTS` 在进程环境里的**字面取值**——即那一串原始字符本身（**含**引号与花括号），不是 JSON 类型名。这是**刻意的 fail-loud**：一个拼错的环境变量会让 harness 直接启动失败，而不是带着半截清单继续跑。
 
@@ -366,9 +454,14 @@ DSH 官方文档在 [Installing from GitHub](https://github.com/deepseek-ai/deep
 
 > ⚠️ 注意 `null` 那一行：它是唯一「格式不对但 boot 不失败」的取值，因为 schema 把 `null` 当「无值」而套用了默认 `[]`。别指望靠 boot 失败来发现自己把清单写成了 `null`。
 
-**Q2：在旧的 dsh 上装了没用，也不报错？**
+**Q2：在旧的 dsh 上装了会怎样？**
 
-这是**设计使然**，不是 bug：id-targeted patch 找不到目标行时会被跳过（loader 会记一条 warn，但默认日志级别下不可见，见[前置条件](#-前置条件最重要)），boot 照常成功——没有目标行就没有 provider 需要配置。请先确认安装闭包里有 remote-host 三包（[前置条件](#-前置条件最重要)）。
+分两个版本：
+
+- **0.1.0：静默 no-op，且不报错。** id-targeted patch 找不到目标行时会被跳过（loader 会记一条 warn，但默认日志级别下不可见，见[前置条件](#-前置条件最重要)），boot 照常成功——没有目标行就没有 provider 需要配置。
+- **0.2.0 起：启动即响亮失败（exit 1）。** 守卫插件 `dsh-remote-cluster/lib/guard.js` 声明了 `inject: ['remoteHosts']`，而 `remoteHosts` 服务由 base 行的 `remote-hosts` 提供。旧 dsh 不含该子系统时，守卫所在的 fiber 拿不到这个服务，就会被 `assertEntriesActivated` 列进 PENDING 清单、直接令 boot 抛错退出（逐字 stderr 见[守卫插件](#-守卫插件020-起)）。旧版「装了没反应」的坑，在 0.2.0 起会变成一个**一眼可见的报错**。
+
+不论哪个版本，装前都请先确认安装闭包里有 remote-host 三包（[前置条件](#-前置条件最重要)）。
 
 **Q3：为什么 `passwordAuth` 的目标要走 ControlMaster？**
 
