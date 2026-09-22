@@ -17,7 +17,7 @@
 
 ## 这是什么
 
-`dsh-remote-cluster` 是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）的一个 **profile bundle**。它**不含任何业务逻辑**——实质内容只有一份 `cordis.patch.yml`，是一份**只有一层**的 patch。
+`dsh-remote-cluster` 是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）的一个 **profile bundle**。它**不含任何业务逻辑**——实质内容是一份 `cordis.patch.yml`（现在是**两个顶层条目**：一行 id-targeted override + 一行 insert）加一个 41 行的**零依赖守卫模块** `lib/guard.js`。
 
 它做两件事：
 
@@ -150,6 +150,8 @@ Node.js v22.22.2
 - PENDING 列表里除了本包的守卫，还有 `remoteHosts` 的**其它既有消费者**（`@deepseek-ai/dsh-host-remote-host-ssh`、以及工具面 `@deepseek-ai/dsh-tool-remote-host`；web profile 下是 `@deepseek-ai/dsh-api-remote-host-controller`）。因此条数是**上游消费者数量的函数**，会随 profile 组态变化——守卫只是让这个本就存在的故障**显性化**，并非新增故障；
 - 我们的模块名逐字出现：`dsh-remote-cluster/lib/guard.js: pending (waiting for service: remoteHosts)`（`entry.options.name` 是 patch 里写的**原始字符串**，故显示为裸包名+子路径）。
 - `at boot ...` 与 `[cause]` 段是 Node 打印 Error（含 `cause`）的标准形态，**确实**会打印。
+
+> 📌 **可移植性**：上文是**本机逐字抓取**（保留为实测凭据），其中 `file:///D:/...` 绝对路径与带 hash 的构建产物名（`profile-boot-BTzzdrGY.js`、`app-boot/lib/index.js` 的行号）会随机器与构建版本变化。**稳定判据**只有三样：`pending (waiting for service: remoteHosts)`、`X entries did not activate`、以及逐字出现的模块名 `dsh-remote-cluster/lib/guard.js`。
 
 ### 它不会误伤健康安装
 
@@ -391,14 +393,15 @@ DSH 会自动 reconcile `dsh.profile.bundles`，把这一层从 profile 里摘�
 ```
 dsh-remote-cluster/
 ├── package.json            # bundle 声明：dsh.bundle.patch → ./cordis.patch.yml
-├── cordis.patch.yml        # 唯一的实质内容：一层、一条 id-targeted 行（remote-hosts-ssh）
+├── cordis.patch.yml        # 唯一的 patch：两个顶层条目——一行 remote-hosts-ssh 的 id-targeted override + 一行 remote-cluster-guard 的 insert
 ├── lib/
-│   └── index.js            # 空模块（export {}），让 git 源码安装不触发任何构建
+│   ├── index.js            # 空模块（export {}），让 git 源码安装不触发任何构建
+│   └── guard.js            # 守卫插件：inject: ['remoteHosts']，子系统缺失时让 boot 响亮失败（0.2.0 起）
 ├── docs/
 │   └── CLUSTER-INVENTORY.md # 清单字段参考（抄自 Provider schema）+ 两条路线取舍
 ├── tools/
-│   ├── verify-bundle.mjs   # 回归校验：真实 loader 解析 + 真实 patch 算法 + 三态求值
-│   └── boot-smoke.mjs      # 真实 boot 冒烟：临时 DSH_HOME，设/不设 env 各跑一遍
+│   ├── verify-bundle.mjs   # 回归校验：真实 loader 解析 + 真实 patch 算法 + 三态求值 + [11] 守卫断言族
+│   └── boot-smoke.mjs      # 真实 boot 冒烟：临时 DSH_HOME，三态（设 env / 不设 env / 无 remote-host 接缝）各跑一遍
 ├── README.md
 ├── LICENSE
 └── .gitignore
@@ -406,7 +409,7 @@ dsh-remote-cluster/
 
 ### 为什么 `lib/index.js` 是空的？
 
-DSH 判定一个依赖是不是「bundle」，**只看**它的 `package.json` 里有没有 `dsh.bundle.patch`；真正的行为全部由 `cordis.patch.yml` 声明。留一个最小的合法 ESM 模块，是为了保证从 git 源码安装时不会因为缺少入口而触发任何构建流程。
+DSH 判定一个依赖是不是「bundle」，**只看**它的 `package.json` 里有没有 `dsh.bundle.patch`；真正的行为全部由 `cordis.patch.yml` 声明。留一个最小的合法 ESM 模块，是为了保证从 git 源码安装时不会因为缺少入口而触发任何构建流程。（0.2.0 起新增的 `lib/guard.js` 是功能性模块，但同样零 import，不改变这一结论。）
 
 ### 为什么本包不需要 `allowBuilds`？
 
@@ -415,9 +418,11 @@ DSH 官方文档在 [Installing from GitHub](https://github.com/deepseek-ai/deep
 本 bundle 两个字面上都不属于这类：
 
 - **零构建脚本**——`package.json` 里没有 `scripts`，没有东西可被拦；
-- **零依赖**——不拉任何传递依赖；`lib/index.js` 本身就是最终产物，只有一行 `export {}`。
+- **零依赖**——不拉任何传递依赖；本包发货的**两个** JS（`lib/index.js`、`lib/guard.js`）都是零 import 的纯 ESM（前者仅 `export {}`；后者仅三个导出 `name` / `inject` / `apply`，无任何 import），本身就是最终产物。
 
 所以四种安装形态都是**一条命令一步装完**，不需要 `allowBuilds`，也不需要「再跑一次」。
+
+> ⚠️ 维护者注意：`package.json` 的 `files` 已从 `["lib/index.js"]` 改为 `["lib"]`。**0.1.0 式的单文件 `files` 会漏发 `lib/guard.js`**——npm/git 打包只会带 `files` 明确列出的路径，守卫模块缺位会让「响亮失败」静默失效。
 
 `tools/*.mjs` 只在开发期用，不在 `package.json` 的 `files` 里，不会进安装产物。
 
