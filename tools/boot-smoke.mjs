@@ -22,6 +22,11 @@
  * so the `!!js` inventory expression is proven evaluable in a real boot, not
  * merely in a unit-level `interpolate` call.
  *
+ * Since 0.2.0 a third state boots a profile with the base `remote-hosts` row
+ * turned OFF (a dsh without the remote-host subsystem). The loud-fail guard
+ * must then keep the process from starting: exit != 0 with a boot audit naming
+ * the guard and the missing `remoteHosts` service.
+ *
  * Run: node tools/boot-smoke.mjs
  */
 
@@ -104,9 +109,12 @@ export function apply(ctx) {
 /**
  * Build one throwaway harness home with the profile, the fixture, and a copy of
  * this bundle installed into the profile's node_modules.
+ * @param options - `disableRemoteHosts` turns the base `remote-hosts` provider
+ * row off (simulating a dsh without the remote-host subsystem); `injectFixture`
+ * adds the test-only fixture row (only valid when `remoteHosts` exists).
  * @returns paths of the home, the marker file, and the bundle copy.
  */
-function createFixture() {
+function createFixture({ disableRemoteHosts = false, injectFixture = true } = {}) {
   const home = mkdtempSync(join(tmpdir(), 'dsh-remote-cluster-smoke-'))
   const profileDir = join(home, 'profiles', PROFILE)
   const bundleDir = join(profileDir, 'node_modules', 'dsh-remote-cluster')
@@ -119,14 +127,24 @@ function createFixture() {
     dsh: { profile: { bundles: [...BUNDLES], patchReload: 'startup' } },
   }, undefined, 2))
 
-  // The profile's own user layer, above every bundle layer: it only carries the
-  // test fixture row. 'startup' patchReload means no HMR watcher is mounted.
-  writeFileSync(join(profileDir, 'cordis.patch.yml'), [
-    '- insert:',
-    '    - id: remote-cluster-smoke-fixture',
-    `      name: ${JSON.stringify(pathToFileURL(join(home, 'fixture.mjs')).href)}`,
-    '',
-  ].join('\n'))
+  // The profile's own user layer, above every bundle layer. It carries the test
+  // fixture row (when the subsystem exists) and, for the missing-subsystem
+  // case, an id-targeted `disabled: true` on the base `remote-hosts` row —
+  // the faithful way to model a dsh that never had the provider: the row is
+  // present but never activates, so no `remoteHosts` service is published.
+  // 'startup' patchReload means no HMR watcher is mounted.
+  const userLayer = []
+  if (disableRemoteHosts) {
+    userLayer.push('- id: remote-hosts', '  disabled: true')
+  }
+  if (injectFixture) {
+    userLayer.push(
+      '- insert:',
+      '    - id: remote-cluster-smoke-fixture',
+      `      name: ${JSON.stringify(pathToFileURL(join(home, 'fixture.mjs')).href)}`,
+    )
+  }
+  writeFileSync(join(profileDir, 'cordis.patch.yml'), `${userLayer.join('\n')}\n`)
 
   writeFileSync(join(home, 'fixture.mjs'), FIXTURE_SOURCE)
   for (const entry of BUNDLE_COPY) {
@@ -235,6 +253,30 @@ const main = async () => {
     check('[env 未设] 注册表为空（回落 base 的中性默认 hosts: []）', Array.isArray(withoutEnv.hosts) && withoutEnv.hosts.length === 0)
   } finally {
     rmSync(fixture.home, { recursive: true, force: true })
+  }
+
+  // ── [post-0.2.0] The loud-fail guard on a dsh WITHOUT the remote-host seam ──
+  // A healthy profile mounts `remote-hosts` (the `remoteHosts` provider) from
+  // dsh-base, so the guard activates and boot is silent — proven above. Here the
+  // provider row is turned off, so the guard's `inject: ['remoteHosts']` cannot
+  // resolve: its fiber stays PENDING and the boot audit must fail the process.
+  // This is asserted on a SEPARATE fixture and does NOT touch the exit-0 model.
+  const noSeam = createFixture({ disableRemoteHosts: true, injectFixture: false })
+  console.log(`no-seam fixture home: ${noSeam.home}`)
+  try {
+    const run = await bootOnce(noSeam.home, noSeam.marker, undefined)
+    check('[无 remote-host 接缝] boot 响亮失败（exit ≠ 0）', run.code !== 0)
+    check('[无 remote-host 接缝] 未超时', run.timedOut === false)
+    check('[无 remote-host 接缝] stderr 含 "plugin tree failed to load"', run.stderr.includes('plugin tree failed to load'))
+    check('[无 remote-host 接缝] stderr 含 "did not activate"', run.stderr.includes('did not activate'))
+    check('[无 remote-host 接缝] stderr 含 "waiting for service: remoteHosts"', run.stderr.includes('waiting for service: remoteHosts'))
+    check('[无 remote-host 接缝] stderr 点名守卫模块 dsh-remote-cluster/lib/guard.js', run.stderr.includes('dsh-remote-cluster/lib/guard.js'))
+    if (run.code === 0 || run.timedOut) {
+      console.log(`       exit=${run.code} timedOut=${run.timedOut}`)
+      console.log(`       stderr: ${run.stderr.trim()}`)
+    }
+  } finally {
+    rmSync(noSeam.home, { recursive: true, force: true })
   }
 
   console.log(failures === 0 ? '\n>>> BOOT SMOKE PASS' : `\n>>> ${failures} FAILURES`)

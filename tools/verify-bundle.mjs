@@ -11,6 +11,11 @@
  *   * `interpolate` evaluates the `!!js` inventory expression against pinned
  *     `process.env` scopes, proving the three states (unset / empty / populated).
  *
+ * Since 0.2.0 the bundle also inserts a loud-fail guard row; [11] asserts that
+ * row's shape (top-level insert, portable bare-package `name`, non-colliding id)
+ * and its module's contracts (exports `name` / `inject` / `apply`, zero imports,
+ * shipped via `files`).
+ *
  * Run: node tools/verify-bundle.mjs
  */
 
@@ -59,11 +64,16 @@ if (loadError !== null) console.log(`       ${String(loadError.message ?? loadEr
 if (patches === null) process.exit(1)
 
 check('[1] 解析结果是数组', Array.isArray(patches))
-check('[1] patch 列表恰好一层', patches.length === 1)
-const patch = patches[0]
+check('[1] patch 列表恰好两行：一行 id-targeted override + 一行守卫 insert', patches.length === 2)
+// The id-targeted override is the row carrying `id` + `config` but no `insert`.
+const patch = patches.find(entry => entry.id !== undefined && entry.insert === undefined)
 check(
-  '[1] 该层键集合恰为 {id, name, config}（证明没有 insert）',
-  Object.keys(patch).sort().join(',') === 'config,id,name',
+  '[1] 存在唯一的 id-targeted override 行（无 insert）',
+  patch !== undefined && patches.filter(entry => entry.id !== undefined && entry.insert === undefined).length === 1,
+)
+check(
+  '[1] 该 override 行键集合恰为 {id, name, config}（证明它不是 insert 行）',
+  patch !== undefined && Object.keys(patch).sort().join(',') === 'config,id,name',
 )
 
 // ── 2. Identity ────────────────────────────────────────────────────────────
@@ -207,8 +217,48 @@ check(
 )
 if (patchCode.includes('tool-remote-host')) console.log(`       code:\n${patchCode}`)
 check(
-  '[10] 该行 id 是代码部分唯一的 id-targeted 目标（本层只碰 remote-hosts-ssh）',
-  (patchCode.match(/\bid:/gu) ?? []).length === 1 && patchCode.includes('id: remote-hosts-ssh'),
+  '[10] 该层 id-targeted 目标集合恰为 {remote-hosts-ssh}（override 行只碰这一行）',
+  (patchCode.match(/\bid:/gu) ?? []).length === 2
+    && patchCode.includes('id: remote-hosts-ssh')
+    && patchCode.includes('id: remote-cluster-guard'),
+)
+
+// ── 11. The loud-fail guard row ────────────────────────────────────────────
+// The guard is a top-level `insert` row (not an id-targeted override): only an
+// inserted row enters the tree at all, and only then can its `inject` be read by
+// the boot audit. Its `name` must be a portable bare-package subpath, its id must
+// not collide with any base row, and its module must ship with zero imports.
+const guardName = 'dsh-remote-cluster/lib/guard.js'
+const guardId = 'remote-cluster-guard'
+const insertRows = patches.flatMap(entry => entry.insert ?? [])
+const guardRow = insertRows.find(row => row.id === guardId)
+check('[11] 守卫行以顶层 insert 出现（不是 id-targeted override）', guardRow !== undefined)
+check(`[11] 守卫行 name === '${guardName}'（裸包名+子路径，可移植）`, guardRow?.name === guardName)
+check(
+  '[11] 守卫行 name 不是 ./ 相对名（相对名只对 insert 生效且被改写成绝对 URL，跨机不可移植）',
+  typeof guardRow?.name === 'string' && guardRow.name.startsWith('./') === false && guardRow.name.startsWith('../') === false,
+)
+
+const baseIds = new Set(baseRows.map(row => row.id))
+check('[11] 守卫 id 不与 base 任何行冲突', baseIds.has(guardId) === false)
+
+const guardPath = join(BUNDLE_DIR, 'lib/guard.js')
+check('[11] lib/guard.js 文件存在且非空', existsSync(guardPath) && readFileSync(guardPath, 'utf8').trim().length > 0)
+const guardSource = existsSync(guardPath) ? readFileSync(guardPath, 'utf8') : ''
+check(
+  "[11] 守卫导出 name / inject 且 inject 含 'remoteHosts'",
+  /export\s+const\s+name\s*=/u.test(guardSource)
+    && /export\s+const\s+inject\s*=/u.test(guardSource)
+    && guardSource.includes('remoteHosts'),
+)
+check('[11] 守卫导出 apply（registry 需要 function 或带 apply 的 object）', /export\s+function\s+apply\s*\(/u.test(guardSource))
+check(
+  '[11] 守卫零 import（守零依赖 / 零构建约束）',
+  /^\s*import\s/mu.test(guardSource) === false && /(?:^|\n)\s*import\s*\(/u.test(guardSource) === false,
+)
+check(
+  '[11] package.json 的 files 放行 lib/guard.js（files 含 "lib"，且 guard.js 确实在 lib/ 下）',
+  manifest.files?.includes('lib') === true && existsSync(join(BUNDLE_DIR, 'lib', 'guard.js')),
 )
 
 console.log(failures === 0 ? '\n>>> ALL BUNDLE CHECKS PASS' : `\n>>> ${failures} FAILURES`)

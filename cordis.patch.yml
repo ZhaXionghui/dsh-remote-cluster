@@ -1,8 +1,12 @@
 # =============================================================================
-# dsh-remote-cluster — 集群清单 / 配置层
+# dsh-remote-cluster — 集群清单 / 配置层 + remote-host 接缝守卫
 #
-# 本层只做一件事：把 base 的中性默认 `remote-hosts-ssh: hosts: []` 换成
-# 「由环境变量供给的集群清单」，并原样重述 base 的三个默认值。
+# 本层做两件事：
+#   1) 把 base 的中性默认 `remote-hosts-ssh: hosts: []` 换成「由环境变量供给的
+#      集群清单」，并原样重述 base 的三个默认值；
+#   2) insert 一行守卫插件 `remote-cluster-guard`，它 `inject: ['remoteHosts']`：
+#      目标 dsh 若不含 remote-host 子系统（没有 `remoteHosts` service），该 entry
+#      无法激活、fiber 停在 PENDING，boot 审计据此响亮失败，而不是静默 no-op。
 #
 # 层位：out-of-tree bundle 由 reconcile 追加到 `dsh.profile.bundles` 末尾，
 # 因此在 in-box bundle（dsh-base / dsh-web-app）之后生效，同 id 行后者胜
@@ -11,6 +15,7 @@
 # 本层刻意不做的事：
 #   * 不 insert 任何 in-box 已存在的行 id —— include 的 insert 不去重 id
 #     （vendor/include/src/index.ts:94），重复 id 会让两个 provider 抢同一注册表。
+#     （本层唯一 insert 的 id 是 `remote-cluster-guard`，base 里不存在这个 id。）
 #   * 不声明 `tool-remote-host`：base 启用它，web-app 故意 `disabled: true`
 #     （packages/bundle/web-app/cordis.patch.yml:351-352）并改由 standard preset 启用
 #     （packages/preset/agent-presets/presets/standard/agent.cordis.yml:78-79）。
@@ -24,6 +29,12 @@
 # 仓库内先例共两处、都是双引号：packages/bundle/base/cordis.patch.yml:250 与
 # packages/bundle/sdk-app/cordis.patch.yml:21；本包用单引号，语义等价。
 # 对照：base/cordis.patch.yml:239 的 `disabled: !!js process.platform === 'win32'` 未加引号且不是三元，不适用本条。
+#
+# 守卫行的 `name` 用「裸包名 + 子路径」：entry 名走 ctx.baseUrl（= profile 根）
+# 解析，本包会被 healProfileModuleFallback 链进 profile 的 node_modules，
+# 因此可移植（先例：packages/bundle/web-app/cordis.patch.yml:106-107 的 web-startup）。
+# 不用 `./` 相对名：相对名只对 insert 行生效、且会被改写成绝对 file: URL，跨机不可移植。
+# 守卫必须走 insert —— 只有 insert 新增的行才会进树、才可能被激活。
 # =============================================================================
 - id: remote-hosts-ssh
   name: '@deepseek-ai/dsh-host-remote-host-ssh'
@@ -37,3 +48,9 @@
     passwordControlMaster: true
     controlPersistSeconds: 900
     maxTransferBytes: 268435456
+
+# 守卫：`inject: ['remoteHosts']`。远程 host 子系统缺失时该 entry 停 PENDING，
+# boot 审计（packages/boot/app-boot/src/index.ts:707-738）据此响亮失败。
+- insert:
+    - id: remote-cluster-guard
+      name: dsh-remote-cluster/lib/guard.js

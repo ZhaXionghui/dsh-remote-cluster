@@ -1,6 +1,6 @@
 {
   "name": "dsh-remote-cluster",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "DSH profile bundle: a declarative cluster-inventory and configuration layer for the DSH remote-host (SSH) capability",
   "keywords": [
     "dsh",
@@ -15,7 +15,7 @@
   "type": "module",
   "main": "lib/index.js",
   "files": [
-    "lib/index.js",
+    "lib",
     "cordis.patch.yml",
     "README.md",
     "LICENSE",
