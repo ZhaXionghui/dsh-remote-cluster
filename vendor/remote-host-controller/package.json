@@ -1,0 +1,16 @@
+{
+  "name": "@deepseek-ai/dsh-api-remote-host-controller",
+  "description": "Typert Remote projection of configured remote hosts, basic facts, and user-driven authentication",
+  "version": "0.1.2-alpha.2",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": { "default": "./lib/index.js" },
+    "./invariant": { "default": "./lib/invariant.js" },
+    "./types": { "default": "./lib/types/types.js" },
+    "./typert": { "default": "./lib/typert.host.js" },
+    "./remote": { "default": "./lib/typert.remote-client.js" },
+    "./package.json": "./package.json"
+  },
+  "license": "MIT"
+}

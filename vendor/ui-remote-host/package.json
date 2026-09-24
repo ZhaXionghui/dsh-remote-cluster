@@ -1,0 +1,24 @@
+{
+  "name": "@deepseek-ai/dsh-client-ui-remote-host",
+  "description": "Localized Remote hosts panel with basic facts and password or MFA authentication for the DSH Web client",
+  "version": "0.1.2-alpha.2",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": { "default": "./lib/index.js" },
+    "./invariant": { "default": "./lib/invariant.js" },
+    "./client": { "default": "./lib/client.js" },
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-api-remotes",
+        "@deepseek-ai/dsh-client-locale",
+        "dsh-better-sidebar"
+      ],
+      "platform": "web"
+    }
+  },
+  "license": "MIT"
+}

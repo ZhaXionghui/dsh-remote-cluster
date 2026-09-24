@@ -1,0 +1,17 @@
+{
+  "name": "@deepseek-ai/dsh-tool-remote-host",
+  "description": "Model-facing remote host tools over the DSH remote-host capability",
+  "version": "0.1.2-alpha.2",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": {
+      "default": "./lib/index.js"
+    },
+    "./invariant": {
+      "default": "./lib/invariant.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "license": "MIT"
+}
