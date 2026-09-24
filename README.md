@@ -9,7 +9,7 @@
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%5E22.19%20%7C%20%3E%3D24-brightgreen.svg)](https://nodejs.org)
 
-[这是什么](#-这是什么) · [与 0.1/0.2 的区别](#-与-0102-的区别) · [安装](#-安装) · [配置集群清单](#-配置集群清单) · [验证](#-验证) · [已知限制](#-已知限制) · [目录结构](#-目录结构) · [常见问题](#-常见问题)
+[这是什么](#这是什么) · [与 0.1/0.2 的区别](#-与-0102-的区别) · [安装](#-安装) · [配置集群清单](#-配置集群清单) · [验证](#-验证) · [已知限制](#-已知限制) · [目录结构](#-目录结构) · [常见问题](#-常见问题)
 
 </div>
 
@@ -214,24 +214,47 @@ node tools/boot-smoke.mjs       # 真实 boot 冒烟
 
 （如果沙箱拦截递归删除，加 `CODEBUDDY_SAFE_DELETE_ENABLED=0`。）
 
-`verify-bundle.mjs` 是**本包的主要证据**：它用真实 loader 解析 patch、真实 import 每个 vendored 产物、在活 context 上激活每一对服务，并用引擎自己的 `interpolate` 求值那条 `!!js` 表达式。
+`verify-bundle.mjs` 是**本包的主要证据**：它用真实 loader 解析 patch、真实 import 每个 vendored 产物、在活 context 上激活每一对服务，并用引擎自己的 `interpolate` 求值那条 `!!js` 表达式。本机实测 **132 PASS / 0 FAIL**。
+
+`boot-smoke.mjs` 在**已发布的 npm dsh** 上应给出全 PASS；在**本仓库开发机**（源码工作区 harness，见「已知限制 1」）上会把依赖 boot 的两节标成 `SKIP`，并打印原因。两种情况下退出码都是 0，**但 `SKIP` 不是 `PASS`**：看到 `SKIP` 就说明本次运行没有验证 boot 行为。
 
 ---
 
 ## ⚠️ 已知限制
 
-### 1. 完整 boot 验证在本机无法完成（版本偏斜）
+### 1. 完整 boot 验证在本机无法完成（不是版本偏斜，是 id 撞车）
 
-本仓库的开发机链接的 harness 是 `0.1.2-alpha.2`，而本包面向 `0.1.5-rc.3`。这导致：
+**这条限制与版本无关。** 本仓库开发机上链接的 harness 是 **源码工作区**（`D:\Dev\deepseek-harness`），而源码工作区的 in-tree bundle **自己就声明了本包要提供的全部六个行 id**：
 
-- `dsh-web-app` 自己的 `web-runtime` 行向 `@deepseek-ai/dsh-launch-environment` 要一个 alpha 里不存在的导出 `launchedThroughSsh`，**base 层自身就无法 boot**；
-- `dsh-better-sidebar` 向 `@deepseek-ai/dsh-session` 要 `SessionLogOffset`，同类问题。
+| 行 id | 声明位置 |
+|---|---|
+| `remote-hosts` | `packages/bundle/base/cordis.patch.yml:90` |
+| `remote-hosts-ssh` | `packages/bundle/base/cordis.patch.yml:93` |
+| `tool-remote-host` | `packages/bundle/base/cordis.patch.yml:280`、`packages/bundle/web-app/cordis.patch.yml:351` |
+| `remote-host-controller` | `packages/bundle/web-app/cordis.patch.yml:99` |
+| `better-sidebar` | `packages/bundle/web-app/cordis.patch.yml:208` |
+| `ui-remote-host` | `packages/bundle/web-app/cordis.patch.yml:211` |
 
-这是**用实验隔离出来的**，不是推测：一个只挂 `dsh-base + dsh-web-app`（不含本包、磁盘上也没有本包）的 profile，同样以 `failed to import loader entry web-runtime` 死亡。loader 在任一行失败时会回滚整个分组，所以在 base 层先死的情况下，运行时根本走不到本包的行。
+于是本包的 `insert:` 与 base 层**必然**重名。这不是本 patch 的缺陷，而是 `insert` 式装配的固有性质：
 
-**后果**：`tools/boot-smoke.mjs` 的「读注册表」类断言在本机被标记为 `SKIP`（不是 PASS），并在总结里显式声明这个盲区——base 层先死时，本包自己的行有缺陷在本文件中**无法暴露**。该职责由 `tools/verify-bundle.mjs` 承担（已用「注入重复 id」的负向测试确认它能抓到、boot-smoke 抓不到）。
+- `applyEntryPatches` 对 `insert` 行做的是**无条件 `data.push(...insert)`，没有任何去重**（`vendor/include/src/index.ts:93-101`）；
+- 重复 id 是**更晚**在 boot 时由 `EntryGroup.update` 抛出的：`for (const options of config) { const id = this.tree.ensureId(options); if (seen.has(id)) throw new TypeError('duplicate loader entry id: ' + id) }`（`vendor/loader/src/config/group.ts:61-64`）；
+- 这段扫描遍历的是**原始条目列表，早于任何 `disabled`（含 `!!js disabled`）被读取**。
 
-npm registry 在本机不可达，所以 `0.1.5-rc.3` 装不上，无法消除这个偏斜。**在一个正常能 boot 的 dsh 上，本项目预期的结果是 `>>> BOOT SMOKE PASS` 且无 SKIP。**
+由此得到两个结论，都已在源码上验证：
+
+1. **不存在**「有则跳过、无则插入」的条件行写法——条件再怎么写都改变不了扫描顺序；
+2. loader 在任一行失败时**回滚整个分组**（`vendor/loader/src/config/group.ts:77-78`），所以这一撞是**致命**的，不是可忽略的告警。
+
+**本机实测**：源码工作区的 base **本身能正常 boot**（会打印 `dsh web: http://127.0.0.1:63331/?token=…` 并开始服务）。之前一度记录为「base 自身无法 boot」是本机临时装的 `/d/Dev/.pubdsh` 已发布包链接造成的假象，与源码工作区无关。
+
+**本机到底能验证什么**：`--dump-config` 在源码树的合成配置里能查到 `id: remote-hosts` 出现 2 次、`id: better-sidebar` 与 `id: ui-remote-host` 各 1 次——即撞车被直接观测到，与上面的源码结论一致。
+
+**后果**：`tools/boot-smoke.mjs` 在检测到 base 已占用这些 id 时（用 `--dump-config` 判定，不是猜），把 `[A]` 与 `[无本层]` 两节整体标记为 `SKIP`（**不是 PASS**），并在总结里显式声明盲区：本包所在分组未被加载时，「本包自身的行有缺陷」在 boot-smoke 里**无法暴露**。该职责由 `tools/verify-bundle.mjs` 承担——它用「向 patch 注入重复 id」的负向测试确认了自己能抓到这类缺陷，而 boot-smoke 抓不到。
+
+**为什么不在本机消除这个限制**：本机 npm registry 不可达，装不上「不含这六行」的已发布 `dsh-base@0.1.5-rc.3` / `dsh-web-app@0.1.5-rc.3`；而源码工作区又必定含这六行。两种形态无法在同一台机器上同时取得，所以本机没有可跑 `[A]` 的组合。
+
+**预期**：在**已发布的 npm dsh**（base/web-app `0.1.5-rc.3`，六行全部空闲）上装上本包，结果应为 `>>> BOOT SMOKE PASS` **且无 SKIP**。这正是本 patch 的目标形态。
 
 ### 2. 与 aggregate bundle 的互斥
 
