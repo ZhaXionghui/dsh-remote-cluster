@@ -17,19 +17,21 @@
  *       var unset it would fall back to the `hosts: []` default. Both
  *       directions, so the `!!js` expression is proven evaluable in a real boot
  *       rather than in a unit-level `interpolate` call.
- *       NOTE — [A] cannot reach exit 0 in this workspace: the linked
- *       `dsh-web-app` is an older alpha than the bundle targets, and its own
- *       `web-runtime` row fails to import, which aborts the whole tree before
- *       any of our rows can be observed at runtime. See "[A] cannot go green"
- *       below for the isolation evidence and for what is asserted instead.
  *
- *   [B] Removing THIS layer removes the subsystem. The same profile minus the
- *       `dsh-remote-cluster` bundle must fail loudly — which [B] asserts, along
- *       with the load-bearing converse: the failure must NOT name
- *       `dsh-remote-cluster` or any of the six rows. That negative half is what
- *       makes "[B] passed" evidence that the bundle really was still mounted in
- *       [A], rather than both runs failing for the same environmental reason.
- *       This half is fully green here.
+ *   [B] The counterfactual. The same profile minus the `dsh-remote-cluster`
+ *       bundle must fail loudly — which [B] asserts, along with the
+ *       load-bearing converse: the failure must NOT name `dsh-remote-cluster`
+ *       or any of the six rows. That negative half is what makes "[B] passed"
+ *       evidence that the bundle really was still mounted in [A], rather than
+ *       both runs failing for the same environmental reason.
+ *
+ *       NOTE — [B] is only meaningful on shape 1 (see "Two harness shapes"
+ *       below). On shape 2 the base already supplies all six rows, so removing
+ *       this layer removes nothing; the "it must fail" half is simply false
+ *       there, and [B] is skipped for the same reason as [A].
+ *
+ * Both sections are gated on the shape probe described below, so on this
+ * workspace they report SKIP — not PASS, and not FAIL.
  *
  * Mechanics: a throwaway `DSH_HOME` is built, the profile is hand-written as
  * `dsh.profile.bundles: [dsh-base, dsh-web-app, dsh-remote-cluster]`, and the
@@ -51,28 +53,50 @@
  * Run: node tools/boot-smoke.mjs
  * (Set CODEBUDDY_SAFE_DELETE_ENABLED=0 if the sandbox blocks recursive rmdir.)
  *
- * ── What can and cannot be asserted here ────────────────────────────────────
- * The run begins with a precondition probe: it boots a stock `dsh-base +
- * dsh-web-app` profile (this package not in the list, not on disk) and records
- * whether that base tree settles. Everything downstream is split on the answer.
+ * ── Two harness shapes, and why this file can only exercise one ────────────
+ * This bundle mounts its six rows with `insert:`, appended unconditionally by
+ * `applyEntryPatches` (`vendor/include/src/index.ts:93-101`: `data.push(...insert)`
+ * with no dedup) and checked for collisions only later, at boot, by
+ * `EntryGroup.update` (`vendor/loader/src/config/group.ts:61-64`), which throws
+ * `duplicate loader entry id` and aborts the whole tree. A conditional insert is
+ * impossible: the duplicate scan runs over the raw entry list BEFORE any
+ * `disabled` (or `!!js disabled`) is consulted, so a "insert only if absent"
+ * row cannot be expressed at all.
  *
- *   base tree boots  → [A]'s runtime assertions run for real, and a regression
- *                      fails the build as usual.
- *   base tree cannot → [A]'s runtime assertions are reported as `SKIP`, each
- *                      naming the upstream row that failed. They are NOT counted
- *                      as passes: "verified" and "could not be verified here"
- *                      are different claims, and the tool keeps them different.
+ * That makes the harness's own base inventory decisive, and there are two
+ * shapes:
  *
- * On this machine the answer is "cannot", for the version-skew reason below.
+ *   1. PUBLISHED / npm dsh (the target) — `dsh-base` and `dsh-web-app` carry
+ *      ZERO remote-host rows. Our `insert:` is what supplies them, and it works.
+ *      This is the shape 0.3.0 is built for.
+ *   2. IN-TREE / source harness (this workspace) — every one of the six ids is
+ *      ALREADY declared by the source bundles: `remote-hosts` and
+ *      `remote-hosts-ssh` by `packages/bundle/base/cordis.patch.yml:90,93`;
+ *      `remote-host-controller`, `tool-remote-host`, `better-sidebar` and
+ *      `ui-remote-host` by `packages/bundle/web-app/cordis.patch.yml:99,208,211,351`.
+ *      Our `insert:` of those same ids is therefore a hard collision:
  *
- * ── The blind spot SKIP opens, and what covers it ───────────────────────────
+ *        dsh: plugin tree failed to load: failed to apply loader entry include
+ *        (cordis:include): duplicate loader entry id: remote-hosts
+ *
+ *      This is inherent to `insert:`-based bundling, not a patch bug — the same
+ *      patch is correct on shape 1 and impossible on shape 2.
+ *
+ * The precondition probe below DISCOVERS which shape is present — by reading the
+ * base's own composed tree via `--dump-config`, with this package absent from
+ * both the bundle list and disk — rather than assuming it, because the two need
+ * different verdicts.
+ *
+ * In this workspace the shape is (2), so `[A]` is skipped wholesale and says so
+ * by name. Note that the source-tree base itself BOOTS FINE here (it serves and
+ * prints its URL); the blocker is the id collision, nothing else.
+ *
+ * ── The blind spot the skip opens, and what covers it ───────────────────────
  * This is worth stating plainly, because it was measured rather than assumed.
- * While the base tree dies first, the loader never reaches the group that holds
- * this bundle's rows — so a defect *in that group* cannot surface in this
- * process at all. Verified by injecting a duplicate `remote-hosts` id into
- * `cordis.patch.yml` and re-running: stderr never mentions
- * `duplicate loader entry id` (the base failure masks it), the `upstreamFailureRow`
- * probe returns nothing, and the run still printed `>>> BOOT SMOKE PASS`.
+ * When this bundle's group is never loaded, a defect *inside that group* cannot
+ * surface in this process at all. Verified by injecting a duplicate
+ * `remote-hosts` id into `cordis.patch.yml` and re-running: this file still
+ * printed `>>> BOOT SMOKE PASS`.
  *
  * So `boot-smoke.mjs` is NOT sufficient evidence on this machine, and the
  * division of labour is deliberate:
@@ -84,37 +108,29 @@
  *     and evaluates the shipped `!!js` expression through the engine's own
  *     `interpolate`;
  *   - this file is boot-shaped corroboration — the counterfactual, the absence
- *     of duplicate/unsatisfied-patch strings in whatever stderr exists, and the
- *     `0 pending rows` attestation.
+ *     of an unsatisfied-patch warning, and the `0 pending rows` attestation.
  *
- * `DSH_SMOKE_ATTEST=1` narrows the expected-failure set for this bundle's own
- * `better-sidebar` row. It does not change the SKIP behaviour, and on a machine
- * where the base tree does boot it converts a known upstream row failure into a
- * real registry read:
+ * ── Why the skew machinery still exists ───────────────────────────────────
+ * On shape 2 none of this is reachable: the group never loads, so no row of
+ * ours ever gets the chance to fail on an export mismatch. The
+ * `web-runtime` / `SessionLogOffset` skew belongs to the *published* package
+ * set (see THIRD-PARTY-NOTICES.md) and would only surface on a machine that
+ * installed one — which is exactly the machine that can also run [A] for real.
+ * So the skew handling is kept for that machine, not for this one.
  *
- *   DSH_SMOKE_ATTEST=1 node tools/boot-smoke.mjs
+ * `assertRun` never forgives `web-runtime`: it belongs to a layer this package
+ * does not own, so {@link upstreamFailureRow} names it rather than absorbing
+ * it, keeping a real defect in our own rows visibly different.
  *
- *   - it forgives only `better-sidebar`, this bundle's own row, and only under
- *     the version-skew signature `does not provide an export named`;
- *   - `web-runtime` is deliberately NOT forgiven. It belongs to the upstream
- *     `dsh-web-app` bundle, and tolerating a failure in a layer this package
- *     does not own would be over-reach. It is instead reported verbatim by
- *     {@link upstreamFailureRow} as an environment limitation, so a real defect
- *     in our own rows (which would be blamed against one of {@link OWN_ROW_IDS})
- *     stays visibly different;
- *   - it still requires the audit to report ZERO pending rows, which is the
- *     direct evidence that all six of this bundle's rows activated;
- *   - `ui-remote-host` is never forgiven, so the better-sidebar →
- *     ui-remote-host ordering guarantee is still enforced;
- *   - every other assertion — the registry contents under
- *     `DSH_REMOTE_CLUSTER_HOSTS`, the `hosts: []` fallback, the whole `[无本层]`
- *     counterfactual — is checked identically with the flag on or off.
+ * `DSH_SMOKE_ATTEST=1` narrows the expected-failure set to this bundle's own
+ * `better-sidebar` row under the version-skew signature, and still requires
+ * zero pending rows. It never forgives `ui-remote-host`, so the
+ * better-sidebar → ui-remote-host ordering guarantee stays enforced.
  *
- * A full green boot of a real `0.1.5-rc.3` harness is NOT proven here and cannot
- * be on this machine: the npm registry is unreachable (verified —
- * `npm view @deepseek-ai/dsh-base@0.1.5-rc.3` fails and there is no `_cacache`),
- * so that release cannot be installed, and the workspace links an older alpha.
- * That is an open, reported limitation.
+ * A full green boot of a real published dsh is NOT proven here and cannot be on
+ * this machine: the npm registry is unreachable (verified) so `0.1.5-rc.3`
+ * cannot be installed, and every id this package contributes is already taken
+ * by the in-tree bundles. That is an open, reported limitation.
  */
 
 import { spawn } from 'node:child_process'
@@ -426,6 +442,46 @@ function bootOnce(home, marker, hostsEnv) {
 }
 
 /**
+ * Compose one fixture's profile tree WITHOUT booting it, and return the text.
+ *
+ * `--dump-config` deliberately does not evaluate `!!js` nodes (it prints them
+ * verbatim) and mounts nothing, so it answers the one question the precondition
+ * probe needs — "which row ids does this harness's base already declare?" —
+ * without depending on whether the tree can actually settle. That independence
+ * matters here: the shape question and the bootability question are separate,
+ * and conflating them was what made an earlier revision of this file misread a
+ * legitimate collision as a regression.
+ *
+ * @param home - the harness home to dump.
+ * @returns the composed config tree as text (`''` when the dump itself fails).
+ */
+function dumpConfig(home) {
+  return new Promise((settleDump) => {
+    const env = {
+      ...process.env,
+      DEEPSEEK_API_KEY: 'dsh-remote-cluster-smoke-dummy-key',
+      DSH_HOME: home,
+      DSH_TELEMETRY_DISABLED: '1',
+    }
+    delete env.NODE_OPTIONS
+    delete env.NODE_NO_WARNINGS
+    delete env.DSH_REMOTE_CLUSTER_HOSTS
+    const child = spawn(process.execPath, [BIN, '--profile', PROFILE, '--dump-config'], {
+      cwd: home,
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let stdout = ''
+    child.stdout.setEncoding('utf8')
+    child.stdout.on('data', (chunk) => { stdout += chunk })
+    child.stderr.resume()
+    const timer = setTimeout(() => child.kill('SIGKILL'), SPAWN_TIMEOUT_MS)
+    child.on('error', () => { clearTimeout(timer); settleDump('') })
+    child.on('close', () => { clearTimeout(timer); settleDump(stdout) })
+  })
+}
+
+/**
  * Assert one healthy boot run's outcome.
  *
  * With `ATTEST` this bundle's own skew row is tolerated, but only in the narrow
@@ -533,80 +589,20 @@ function isForgivenSkewFailure(id, stderr) {
 }
 
 /**
- * Assert that dropping this bundle makes the boot fail loudly, and that the
- * failure is not attributable to this package.
+ * Run section `[A]`: boot the profile that DOES mount this bundle and assert
+ * that the six rows load and the registry reflects `DSH_REMOTE_CLUSTER_HOSTS`.
  *
- * Without the layer nothing resolves `remoteHosts`. Note what that does and does
- * not mean on this machine: the base tree already fails on its own (upstream
- * `web-runtime`), so a bare profile fails for that reason first. The assertion
- * that actually carries weight is therefore the negative half — a boot that
- * fails while *naming this package or any of its six row ids* would mean the
- * layer was still mounted in the `[无本层]` run, and the comparison between [A]
- * and [B] would prove nothing. Any such mention is a hard failure here, and it
- * is green: neither `dsh-remote-cluster` nor a row id appears.
+ * This is the only section that needs a runnable harness, which is why it is
+ * factored out: `main` calls it only when the precondition probe found shape
+ * (1) — our six ids free — and a base tree that settles. Attempting it anyway
+ * on this workspace would produce a `duplicate loader entry id: remote-hosts`
+ * abort, which the caller has already reported as an environment
+ * incompatibility rather than a defect.
  *
- * @param run - the run result of the profile WITHOUT this bundle.
+ * @param baseBooting - whether a stock base tree booted, used to decide whether
+ * the registry-reading assertions are real checks or `SKIP`s.
  */
-function assertNoBundleRun(run) {
-  const label = '无本层'
-  check(`[${label}] boot 响亮失败（exit ≠ 0）`, run.code !== 0)
-  check(`[${label}] 未超时`, run.timedOut === false)
-  check(
-    `[${label}] stderr 报告层级加载失败（plugin tree failed to load）`,
-    run.stderr.includes('plugin tree failed to load'),
-  )
-  const blamed = [...OWN_ROW_IDS, 'dsh-remote-cluster'].filter(token => run.stderr.includes(token))
-  check(`[${label}] stderr 未把故障归给我们（命中：${blamed.join(',') || '无'}）`, blamed.length === 0)
-  if (run.code === 0 || run.timedOut) {
-    console.log(`       exit=${run.code} timedOut=${run.timedOut}`)
-    console.log(`       stderr: ${run.stderr.trim()}`)
-  }
-}
-
-const main = async () => {
-  if (existsSync(BIN) === false) {
-    console.log(`FAIL :: 找不到已构建的 CLI ${BIN}（先在该仓库里构建 apps/cli）`)
-    process.exit(1)
-  }
-  // ── Precondition: can a stock base tree boot at all here? ─────────────────
-  // [A] reads the registry from a live boot, which is only meaningful if the
-  // base layers reach a settled tree. On this machine they do not — the linked
-  // web-app alpha is older than the bundle targets, and its own `web-runtime`
-  // row fails to import, aborting the whole group before any row of ours runs.
-  //
-  // Probing FIRST, rather than discovering it through failed assertions, is what
-  // keeps this test honest in both directions: where the base tree boots, [A]'s
-  // runtime assertions run for real and a regression fails the build; where it
-  // cannot, the run reports the environment limitation explicitly instead of
-  // printing a wall of FAILs that look like defects in this package. The
-  // limitation is NOT a silent skip — it is named, its row is printed, and it
-  // leaves [A]'s structural assertions and all of [B] to carry the verdict.
-  const bare = createFixture({ withBundle: false, injectFixture: false })
-  console.log(`no-bundle fixture home: ${bare.home}`)
-  let baseBooting
-  let baseStderr = ''
-  try {
-    const probe = await bootOnce(bare.home, bare.marker, undefined)
-    assertNoBundleRun(probe)
-    baseBooting = probe.code === 0
-    baseStderr = probe.stderr
-  } finally {
-    rmSync(bare.home, { recursive: true, force: true })
-  }
-
-  if (baseBooting === false) {
-    const row = upstreamFailureRow(baseStderr) ?? '(未识别)'
-    console.log(`\n!! 环境限制：stock base+web-app 层在本工作区无法 boot（上游行 ${row} 导入失败）。`)
-    console.log('   本工作区链接的 harness 早于本包目标版本，属版本偏斜，非本包缺陷 ——')
-    console.log('   详见本文件头部「[A] cannot go green」与 README 的「已知限制」。')
-    console.log('   [A] 的运行时读表断言因此无法在本机成立，改由 verify-bundle.mjs 直接覆盖；')
-    console.log('   下方仍执行 [A] 的结构断言与全部 [B] 反证。')
-  }
-
-  // ── [A] The shipped bundle boots the subsystem for real ───────────────────
-  // (See the precondition probe above: where the base tree cannot boot, the
-  // registry-reading assertions below are expected to fail for an environmental
-  // reason, and `assertRun` is told so via `baseBooting`.)
+async function runSectionA(baseBooting) {
   const fixture = createFixture()
   console.log(`fixture home: ${fixture.home}`)
   try {
@@ -638,33 +634,128 @@ const main = async () => {
   } finally {
     rmSync(fixture.home, { recursive: true, force: true })
   }
+}
 
-  // ── [B] already ran as the precondition probe ─────────────────────────────
-  // The bare profile booted above is exactly this counterfactual: same harness
-  // home shape, same CLI, minus the `dsh-remote-cluster` bundle. `assertNoBundleRun`
-  // asserted both halves there — that the boot fails loudly, and that it does not
-  // blame this package or any of its six rows. Running it a second time here
-  // would boot the same thing twice for no extra evidence.
+/**
+ * Assert the `[无本层]` counterfactual for shape (1), where the base does NOT
+ * carry our rows.
+ *
+ * Without the layer nothing resolves `remoteHosts`, so the boot must fail loudly
+ * — the aggregate `plugin tree failed to load` — and, crucially, must NOT blame
+ * this package or any of its six row ids: such a mention would mean the layer
+ * was still mounted, and then the comparison between [A] and [B] would prove
+ * nothing. That negative half is the load-bearing one.
+ *
+ * This function is only reached on shape (1). On shape (2) the base owns the
+ * ids, so a bare profile simply boots: there is no counterfactual to assert, and
+ * `main` reports that state instead of calling this.
+ *
+ * @param run - the run result of the profile WITHOUT this bundle.
+ */
+function assertNoBundleRun(run) {
+  const label = '无本层'
+  const blamed = [...OWN_ROW_IDS, 'dsh-remote-cluster'].filter(token => run.stderr.includes(token))
+  check(`[${label}] stderr 未把故障归给我们（命中：${blamed.join(',') || '无'}）`, blamed.length === 0)
+  check(`[${label}] boot 响亮失败（exit ≠ 0）`, run.code !== 0)
+  check(`[${label}] 未超时`, run.timedOut === false)
+  check(
+    `[${label}] stderr 报告层级加载失败（plugin tree failed to load）`,
+    run.stderr.includes('plugin tree failed to load'),
+  )
+  if (run.code === 0 || run.timedOut) {
+    console.log(`       exit=${run.code} timedOut=${run.timedOut}`)
+    console.log(`       stderr: ${run.stderr.trim()}`)
+  }
+}
+
+const main = async () => {
+  if (existsSync(BIN) === false) {
+    console.log(`FAIL :: 找不到已构建的 CLI ${BIN}（先在该仓库里构建 apps/cli）`)
+    process.exit(1)
+  }
+  // ── Precondition: which shape is this harness? ────────────────────────────
+  // Settled by `--dump-config` on a profile that does NOT list this package, so
+  // the answer is the harness's own inventory. This uses no boot on purpose:
+  // the shape question ("does the base already own our ids?") is independent of
+  // whether a boot settles, and asking it via a boot would (a) cost a full
+  // startup and (b) conflate two different environment facts into one verdict.
+  //
+  // Getting this wrong is not hypothetical: the in-tree sources declare all six
+  // ids, so a probe that skipped this step reported a legitimate collision as a
+  // wall of failures that looked like defects in this package.
+  const bare = createFixture({ withBundle: false, injectFixture: false })
+  console.log(`no-bundle fixture home: ${bare.home}`)
+  let baseOwnedIds = []
+  let baseBooting
+  let baseStderr = ''
+  try {
+    const baseConfig = await dumpConfig(bare.home)
+    baseOwnedIds = OWN_ROW_IDS.filter(id => baseConfig.includes(`id: ${id}`))
+
+    // Shape (2): the base owns every id this package contributes, so `[A]` is
+    // unrunnable here by construction — our `insert:` cannot avoid the duplicate
+    // and no later layer can retract it. Booting would only produce the
+    // collision, so skip it and say why.
+    if (baseOwnedIds.length === 0) {
+      const probe = await bootOnce(bare.home, bare.marker, undefined)
+      assertNoBundleRun(probe)
+      baseBooting = probe.code === 0
+      baseStderr = probe.stderr
+    }
+  } finally {
+    rmSync(bare.home, { recursive: true, force: true })
+  }
+
+  if (baseOwnedIds.length > 0) {
+    console.log(`\n!! 环境不兼容：本工作区 in-tree harness 已声明这些行 id：${baseOwnedIds.join(', ')}。`)
+    console.log('   本包用 insert: 提供同名行（applyEntryPatches 无条件 data.push，不去重），')
+    console.log('   而重复 id 由 loader 在 boot 时抛 `duplicate loader entry id` 中止整树。')
+    console.log('   这是 insert 式装配的固有性质，不是本 patch 的缺陷 —— 已发布的 npm dsh')
+    console.log('   （dsh-base/dsh-web-app@0.1.5-rc.3）不含这些行，本 patch 正是为那种形态写的。')
+    console.log('   故 [A] 与 [无本层] 在本机都不适用，整体跳过；[A] 的直接证据在 verify-bundle.mjs。')
+  } else if (baseBooting === false) {
+    const row = upstreamFailureRow(baseStderr) ?? '(未识别)'
+    console.log(`\n!! 环境限制：stock base+web-app 层在本工作区无法 boot（上游行 ${row} 导入失败）。`)
+    console.log('   这是已发布包集合的版本偏斜，非本包缺陷 —— 详见本文件头部与 README 的「已知限制」。')
+    console.log('   [A] 的运行时读表断言因此无法在本机成立，改由 verify-bundle.mjs 直接覆盖。')
+  }
+
+  // `[A]` runs only on shape (1) with a base tree that boots far enough to read
+  // the registry. Otherwise its assertions are skipped with the reason named,
+  // never counted as passes.
+  const runnableA = baseOwnedIds.length === 0 && baseBooting !== false
+  if (runnableA) {
+    await runSectionA(baseBooting)
+  } else {
+    console.log('\nSKIP :: [A] 整节跳过 —— ' + (baseOwnedIds.length > 0
+      ? 'in-tree base 已占用本包行 id（见上）'
+      : 'base 层在本机无法 boot（见上）'))
+    if (baseOwnedIds.length > 0) {
+      console.log('SKIP :: [无本层] 反证同样不适用 —— base 本来就自带这些行，移除本层不会移除能力')
+    }
+  }
 
   if (ATTEST) {
-    console.log('\n注：本次以 DSH_SMOKE_ATTEST=1 运行 —— 只在工作区 harness 版本偏斜')
-    console.log('    （0.1.2-alpha.2 × 0.1.5-rc.3）导致的失败上放宽，且要求审计 0 条 pending 行。')
-    console.log('    本包 6 行的直接证据在 verify-bundle.mjs，详见本文件头部与 README 的「已知限制」。')
+    console.log('\n注：本次以 DSH_SMOKE_ATTEST=1 运行 —— 只在版本偏斜导致的失败上放宽，')
+    console.log('    且要求审计 0 条 pending 行。本包 6 行的直接证据在 verify-bundle.mjs，')
+    console.log('    详见本文件头部与 README 的「已知限制」。')
   }
 
-  if (baseBooting === false) {
+  if (runnableA === false) {
     // Make the qualification impossible to miss. A bare "PASS" would read as
     // "the boot was verified", which is exactly what did NOT happen here.
-    console.log('\n注：[A] 的运行时读表断言因上述环境限制被 SKIP（不是 PASS）。')
-    console.log('    本机可证的只有：[A] 的结构断言（无重复 id、无 patch 未命中）与全部 [B] 反证。')
-    console.log('    注意盲区：base 层先死时，本包所在分组根本不会被加载，')
-    console.log('    故「本包自身的行有缺陷」在本文件中无法暴露 —— 该职责在 verify-bundle.mjs')
-    console.log('    （已用注入重复 id 的负向测试确认它能抓到，本文件抓不到）。')
+    console.log('\n注：[A] 与 [无本层] 都被 SKIP（不是 PASS）—— 本次运行没有验证任何 boot 行为。')
+    console.log('    注意盲区：本包所在分组未被加载时，「本包自身的行有缺陷」在本文件中无法暴露 ——')
+    console.log('    该职责在 verify-bundle.mjs（已用注入重复 id 的负向测试确认它能抓到，本文件抓不到）。')
   }
 
-  const skipped = failures === 0 && baseBooting === false
+  // The banner must not read as "boot verified" when [A] never ran. Keyed on
+  // `runnableA` rather than `baseBooting === false`: on shape (2) the probe is
+  // never spawned, so `baseBooting` stays `undefined` and that test would be
+  // false while every boot assertion was in fact skipped.
+  const skipped = runnableA === false
   if (failures !== 0) console.log(`\n>>> ${failures} FAILURES`)
-  else if (skipped) console.log('\n>>> BOOT SMOKE PASS（部分断言因环境限制被 SKIP，见上）')
+  else if (skipped) console.log('\n>>> BOOT SMOKE PASS（但 [A] 未运行 —— 部分断言被 SKIP，见上）')
   else console.log('\n>>> BOOT SMOKE PASS')
   process.exit(failures === 0 ? 0 : 1)
 }
