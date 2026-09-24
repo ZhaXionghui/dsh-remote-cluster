@@ -1,5 +1,5 @@
 /** Shell-free argv construction for opening one configured SSH target in a native terminal. */
-import { openNativeTerminal, } from '@deepseek-ai/dsh-native-command';
+import { RemoteHostError } from '../../host-remote-host/lib/index.js';
 import { NATIVE_SSH_CLIENT, sshClientInvocation, } from "./ssh-client.js";
 /**
  * Build direct OpenSSH argv without including any password or MFA response.
@@ -33,24 +33,20 @@ export function sshRemoteTerminalArgs(target) {
 }
 /**
  * Open a native terminal for one configured SSH target.
- * @param target - validated target summary and local authentication reference.
- * @param signal - cancellation checked before the terminal process is started.
- * @param internals - native-terminal platform and launcher seams for tests.
- * @returns after the operating system accepts the detached terminal launch.
+ *
+ * This file is build residue: `./types/*` is absent from the package's
+ * `exports` table (only `.` and `./invariant` are published) and nothing
+ * imports it, so it is unreachable at runtime. The live implementation is
+ * `openSshRemoteTerminal` in `lib/index.js`; this copy only has to stop
+ * importing a symbol that does not exist in any published release.
+ *
+ * The upstream symbol this used to call — `openNativeTerminal` — was added by
+ * `c36edb349f` and never released. A missing native launcher is the documented
+ * optional-capability path: the service definition raises `TERMINAL_UNAVAILABLE`
+ * (`vendor/host-remote-host/lib/index.js:125`), so raising the same error here
+ * keeps the two copies in agreement.
  */
-export function openSshRemoteTerminal(target, signal = new AbortController().signal, internals = {}) {
-    const agentSocket = target.agentSocket !== undefined
-        && target.agentSocket.toLowerCase() !== 'pageant'
-        ? { SSH_AUTH_SOCK: target.agentSocket }
-        : undefined;
-    const invocation = sshClientInvocation(target.client ?? NATIVE_SSH_CLIENT, 'ssh', sshRemoteTerminalArgs(target));
-    return openNativeTerminal({
-        command: invocation.command,
-        args: invocation.args,
-        title: target.label,
-    }, signal, {
-        ...internals,
-        ...agentSocket === undefined ? {} : { env: { ...internals.env, ...agentSocket } },
-    });
+export function openSshRemoteTerminal() {
+    throw new RemoteHostError('the vendored SSH provider has no native terminal launcher: the harness API it needs was never published', 'TERMINAL_UNAVAILABLE');
 }
 //# sourceMappingURL=terminal.js.map

@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { credentialKey } from "@deepseek-ai/dsh-credentials";
 import { RemoteHostError, RemoteHostId } from "../../host-remote-host/lib/index.js";
-import { openNativeTerminal, runNativeCommand } from "@deepseek-ai/dsh-native-command";
+import { runNativeCommand } from "@deepseek-ai/dsh-native-command";
 import { deepEqualJson } from "@deepseek-ai/dsh-util-values";
 import z from "@deepseek-ai/schemastery";
 import { TextRetainer } from "@deepseek-ai/dsh-output-retention";
@@ -212,25 +212,28 @@ function sshRemoteTerminalArgs(target) {
 }
 /**
 * Open a native terminal for one configured SSH target.
-* @param target - validated target summary and local authentication reference.
-* @param signal - cancellation checked before the terminal process is started.
-* @param internals - native-terminal platform and launcher seams for tests.
-* @returns after the operating system accepts the detached terminal launch.
+*
+* The upstream commit that added this (`c36edb349f`, "feat(remote-host):
+* project remote hosts into tools, API, and the web client") also added
+* `openNativeTerminal` to `@deepseek-ai/dsh-native-command` — and that symbol
+* was never released. The published `0.1.5-rc.3` exports only
+* `canOpenNativePath`, `nativeFileManager`, `openNativePath`,
+* `openNativeTextFile`, `revealNativePath` and `runNativeCommand`.
+*
+* So this launcher cannot be provided here. It is OPTIONAL by design: the
+* remote-host Service Definition treats a missing `openTerminal` as
+* `TERMINAL_UNAVAILABLE` (`vendor/host-remote-host/lib/index.js:125`), the
+* backend reaches the same branch at `:1247`, and the controller maps it to
+* `remote-host/terminal-unavailable`. Callers already handle that — the native
+* terminal is only a shortcut that bypasses browser polling for password / MFA
+* / host-key / passphrase prompts, and the panel-side authentication path stays
+* available without it.
+*
+* @returns never; kept so the `openTerminal` seam still fails loudly rather
+* than silently resolving to an undefined launch.
 */
-function openSshRemoteTerminal(target, signal = new AbortController().signal, internals = {}) {
-	const agentSocket = target.agentSocket !== void 0 && target.agentSocket.toLowerCase() !== "pageant" ? { SSH_AUTH_SOCK: target.agentSocket } : void 0;
-	const invocation = sshClientInvocation(target.client ?? NATIVE_SSH_CLIENT, "ssh", sshRemoteTerminalArgs(target));
-	return openNativeTerminal({
-		command: invocation.command,
-		args: invocation.args,
-		title: target.label
-	}, signal, {
-		...internals,
-		...agentSocket === void 0 ? {} : { env: {
-			...internals.env,
-			...agentSocket
-		} }
-	});
+function openSshRemoteTerminal() {
+	throw new RemoteHostError("the vendored SSH provider has no native terminal launcher: the harness API it needs was never published", "TERMINAL_UNAVAILABLE");
 }
 //#endregion
 //#region lib/types/facts.js

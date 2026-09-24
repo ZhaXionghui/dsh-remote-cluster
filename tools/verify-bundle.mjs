@@ -29,7 +29,7 @@
  * Run: node tools/verify-bundle.mjs
  */
 
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
+import { existsSync, lstatSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { dirname, join, relative, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -579,6 +579,236 @@ check(
 // each declared package must actually be named in the dependencies table.
 for (const dep of declaredDeps) {
   check(`[13] THIRD-PARTY-NOTICES.md 记录了依赖 ${dep}`, notices.includes(`\`${dep}\``))
+}
+
+/**
+ * [14] Named imports must exist in the published package they name.
+ *
+ * Family [13] proves every bare specifier has an owner, but owning a package is
+ * not the same as that package exporting the symbol. The vendored artifacts are
+ * copied from a source commit, and a source commit can be AHEAD of every release
+ * — it can import a symbol that was added after the last version was cut and
+ * therefore does not exist on any machine that installs this bundle from npm.
+ *
+ * This is not hypothetical: `vendor/host-remote-host-ssh/lib/index.js` imported
+ * `openNativeTerminal` from `@deepseek-ai/dsh-native-command`, a symbol added by
+ * `c36edb349f` and never released. `0.1.5-rc.3` exports only `canOpenNativePath`,
+ * `nativeFileManager`, `openNativePath`, `openNativeTextFile`, `revealNativePath`
+ * and `runNativeCommand`. The import is a static ESM binding, so it does not
+ * fail until the row loads — at which point the whole plugin tree refuses to
+ * boot:
+ *
+ *   failed to import loader entry remote-hosts-ssh: The requested module
+ *   '@deepseek-ai/dsh-native-command' does not provide an export named
+ *   'openNativeTerminal'
+ *
+ * `node --check` cannot see this (it is a link-time error, not a parse error)
+ * and family [13] cannot see it (the package is declared and present). So the
+ * exports are read from the real installed packages and compared by name.
+ *
+ * WHICH installation matters, and this is the subtle part. Two trees are on
+ * this machine and they disagree:
+ *
+ *   * `node_modules/@deepseek-ai/*` — symlinks into the SOURCE WORKSPACE, which
+ *     reports `0.1.2-alpha.2`. A source commit is not a release.
+ *   * `<published profile>/node_modules/@deepseek-ai/*` — real `0.1.5-rc.3`
+ *     packages, exactly what a consumer installs.
+ *
+ * Checking the first would be checking the wrong thing: `dsh-session` at
+ * `0.1.2-alpha.2` does not export `SessionLogOffset` while `0.1.5-rc.3` does, so
+ * a source-tree verdict would report a defect that no consumer can hit. The
+ * published tree is therefore preferred, and a package available only as a
+ * source link is SKIPPED rather than judged — a verdict about a version nobody
+ * installs is worse than no verdict.
+ *
+ * The published tree is located without hard-coding one machine's layout:
+ * `DSH_VERIFY_PUBLISHED` names it explicitly, otherwise a profile produced by
+ * `tools/boot-smoke.mjs` is looked for under the usual scratch roots.
+ */
+const NAMED_IMPORT_RE = /\b(?:import|export)\s*\{([^}]*)\}\s*from\s*['"]([^'"]+)['"]/gu
+const namedImports = new Map()
+const namedReached = new Set()
+const visitNamed = (file) => {
+  const normalized = resolve(file)
+  if (namedReached.has(normalized) || existsSync(normalized) === false) return
+  namedReached.add(normalized)
+  const src = stripComments(readFileSync(normalized, 'utf8'))
+  // Relative edges first, so the whole reachable graph is covered, not just rows.
+  for (const spec of importsOf(src)) {
+    if (spec.startsWith('.')) visitNamed(resolve(dirname(normalized), spec))
+  }
+  for (const m of src.matchAll(NAMED_IMPORT_RE)) {
+    const spec = m[2].trim()
+    // Only package specifiers name a package to check. A relative specifier is
+    // resolved by `visitNamed` above, and `..` (which appears verbatim in the
+    // vendored `../../host-remote-host/lib/index.js`) is not a package name.
+    if (spec.startsWith('.') || spec.startsWith('node:') || spec.startsWith('file:')) continue
+    const pkgName = packageOf(spec)
+    if (PLATFORM_PROVIDED.has(pkgName)) continue
+    for (const raw of m[1].split(',')) {
+      const name = raw.trim().split(/\s+as\s+/u)[0].trim()
+      if (name === '' || name.startsWith('type ')) continue
+      if (!namedImports.has(pkgName)) namedImports.set(pkgName, new Map())
+      if (!namedImports.get(pkgName).has(name)) namedImports.get(pkgName).set(name, new Set())
+      namedImports.get(pkgName).get(name).add(relative(BUNDLE_DIR, normalized).replace(/\\/gu, '/'))
+    }
+  }
+}
+for (const name of literalNames) visitNamed(resolve(BUNDLE_DIR, name))
+for (const dir of readdirSync(VENDOR_ROOT)) {
+  const manifestPath = join(VENDOR_ROOT, dir, 'package.json')
+  if (existsSync(manifestPath) === false) continue
+  const exported = JSON.parse(readFileSync(manifestPath, 'utf8')).exports ?? {}
+  for (const target of Object.values(exported)) {
+    const rel = typeof target === 'string' ? target : target?.default
+    if (typeof rel !== 'string' || rel.startsWith('.') === false) continue
+    visitNamed(resolve(VENDOR_ROOT, dir, rel))
+  }
+}
+
+/** Candidate `node_modules` roots holding a real published install, best first. */
+const publishedRoots = []
+if (process.env.DSH_VERIFY_PUBLISHED) publishedRoots.push(process.env.DSH_VERIFY_PUBLISHED)
+for (const scratch of ['D:/Dev/_pubhome', 'D:/Dev/_pubsh']) {
+  for (const profile of ['web', 'node', 'clustersmoke']) {
+    const candidate = join(scratch, 'profiles', profile, 'node_modules')
+    if (existsSync(candidate)) publishedRoots.push(candidate)
+  }
+}
+publishedRoots.push(join(BUNDLE_DIR, 'node_modules'))
+/**
+ * Locate the package the way the loader would, preferring the published tree.
+ *
+ * Returns `{ dir, provenance }`, or `undefined` when the package is nowhere.
+ */
+const locate = (pkgName) => {
+  for (const root of publishedRoots) {
+    const dir = join(root, pkgName)
+    if (existsSync(join(dir, 'package.json'))) {
+      const isLink = statSync(dir).isSymbolicLink?.() ?? lstatSyncSafe(dir)
+      // A link into the source workspace is still a source tree, whichever root
+      // it was reached through — record that so the caller can weigh it.
+      return { dir, published: isLink === false }
+    }
+  }
+  return undefined
+}
+/** `statSync` follows links, so the source check needs the link itself. */
+function lstatSyncSafe(p) {
+  try {
+    return lstatSync(p).isSymbolicLink()
+  } catch {
+    return false
+  }
+}
+/** Resolve a package's root entry the way Node would for an ESM import.
+ *
+ * Condition order matters and is easy to get wrong: `ws` publishes
+ * `{"browser": "./browser.js", "import": "./wrapper.mjs", "require": "./index.js"}`.
+ * Taking the first key yields `browser.js`, whose namespace has no `WebSocket`,
+ * which would report a symbol as missing that is in fact exported. An `import`
+ * resolution picks `wrapper.mjs`, which does export it.
+ */
+const rootEntryOf = (manifest) => {
+  const root = manifest.exports?.['.']
+  if (typeof root === 'string') return root
+  if (root !== undefined && typeof root === 'object') {
+    for (const condition of ['import', 'node', 'default']) {
+      const target = root[condition]
+      if (typeof target === 'string') return target
+    }
+    for (const value of Object.values(root)) {
+      if (typeof value === 'string') return value
+    }
+  }
+  return manifest.module ?? manifest.main ?? 'index.js'
+}
+
+/**
+ * Names a module's source declares as exported bindings.
+ *
+ * `Object.keys(namespace)` is not always the whole answer. A bundler emits
+ * `var RemoteHostError = class extends Error {...}` and then lists the binding
+ * in one trailing `export { RemoteHostError, RemoteHostId, ... }` statement;
+ * reading that statement is the reliable answer, and it is also exactly what a
+ * static ESM binding resolves against. The namespace is still consulted, since
+ * a CJS root (again `ws`) exposes its names there and not in any `export {}`.
+ */
+const declaredExportsOf = (src) => {
+  const names = new Set()
+  for (const m of src.matchAll(/\bexport\s*\{([^}]*)\}/gu)) {
+    for (const raw of m[1].split(',')) {
+      const name = raw.trim().split(/\s+as\s+/u).pop().trim()
+      if (name !== '') names.add(name)
+    }
+  }
+  for (const m of src.matchAll(/\bexport\s+(?:declare\s+)?(?:async\s+)?(?:function|class|const|let|var)\s+(\w+)/gu)) {
+    names.add(m[1])
+  }
+  names.add('default')
+  return names
+}
+
+const missingSymbols = []
+const uncheckedPackages = []
+const sourceOnlyPackages = []
+const checkedVersions = new Map()
+for (const [pkgName, wanted] of [...namedImports].sort()) {
+  const found = locate(pkgName)
+  if (found === undefined) { uncheckedPackages.push(pkgName); continue }
+  // A source-workspace link is not a release. Judging the vendored code against
+  // it would invent defects (and hide real ones) for a version no consumer gets.
+  if (found.published === false) { sourceOnlyPackages.push(pkgName); continue }
+  const manifest = JSON.parse(readFileSync(join(found.dir, 'package.json'), 'utf8'))
+  checkedVersions.set(pkgName, manifest.version ?? '?')
+  const entryFile = join(found.dir, rootEntryOf(manifest))
+  if (existsSync(entryFile) === false) { uncheckedPackages.push(pkgName); continue }
+  const declared = declaredExportsOf(readFileSync(entryFile, 'utf8'))
+  let namespace = new Set()
+  try {
+    namespace = new Set(Object.keys(await import(pathToFileURL(entryFile).href)))
+  } catch {
+    // A root that cannot be imported here is not evidence that a symbol is
+    // missing; the declaration scan above still decides.
+  }
+  for (const [name, owners] of wanted) {
+    if (namespace.has(name) || declared.has(name)) continue
+    missingSymbols.push([pkgName, name, [...owners], manifest.version ?? '?'])
+  }
+}
+
+check('[14] 可达性遍历确实读到了具名导入（防止空集假绿）', namedImports.size > 0, `已扫: ${namedImports.size} 个包`)
+check(
+  '[14] 已确认存在真实已发布安装（否则本族无从判定）',
+  checkedVersions.size > 0,
+  '未找到任何已发布包；请先跑 tools/boot-smoke.mjs 生成 profile，或用 DSH_VERIFY_PUBLISHED 指定',
+)
+check(
+  '[14] 每个具名导入在已发布的包里真实存在',
+  missingSymbols.length === 0,
+  missingSymbols.length === 0
+    ? ''
+    : `缺失: ${missingSymbols.map(([p, n, o, v]) => `${p}@${v} → ${n} (${o.join(' ')})`).join('; ')}`,
+)
+// A hole in the evidence is not a pass. Say so out loud so nobody reads the
+// line above as "all named imports verified" when it is not.
+if (uncheckedPackages.length > 0) {
+  console.log(`SKIP :: [14] 以下包未安装，其具名导入未被核对: ${uncheckedPackages.join(', ')}`)
+}
+if (sourceOnlyPackages.length > 0) {
+  console.log(
+    `SKIP :: [14] 以下包只找到源码工作区链接（非发布版），未按其判定: ${sourceOnlyPackages.join(', ')}`,
+  )
+}
+// The specific symbol that broke the published boot must stay gone.
+const nativeCommand = join(BUNDLE_DIR, 'vendor', 'host-remote-host-ssh', 'lib', 'index.js')
+if (existsSync(nativeCommand)) {
+  const src = stripComments(readFileSync(nativeCommand, 'utf8'))
+  check(
+    '[14] ssh provider 不再 import 从未发布的 openNativeTerminal',
+    src.includes('openNativeTerminal') === false,
+    '仍在使用该符号；已发布 dsh-native-command 不导出它，boot 会失败',
+  )
 }
 
 console.log(failures === 0 ? '\n>>> ALL BUNDLE CHECKS PASS' : `\n>>> ${failures} FAILURES`)
