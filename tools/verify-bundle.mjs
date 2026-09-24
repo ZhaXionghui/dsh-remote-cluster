@@ -23,6 +23,8 @@
  *   [10]     no residual cross-package bare import in the vendor tree
  *   [11]     third-party notices keep the MIT licence text
  *   [12]     the retired 0.2.0 guard is gone and nothing references it
+ *   [13]     every bare import in `vendor/` has an owner: a relative path, a
+ *            declared dependency, or a package the published dsh provides
  *
  * Run: node tools/verify-bundle.mjs
  */
@@ -44,9 +46,18 @@ let failures = 0
  * @param name - the assertion description.
  * @param condition - the assertion outcome.
  */
-const check = (name, condition) => {
-  console.log(`${condition ? 'PASS' : 'FAIL'} :: ${name}`)
-  if (!condition) failures += 1
+/**
+ * Records one assertion. `detail` is printed only on failure: when an invariant
+ * breaks, the value that broke it is what makes the failure actionable, and
+ * keeping it off the passing lines preserves the one-line-per-assertion read.
+ */
+const check = (name, condition, detail = '') => {
+  if (condition) {
+    console.log(`PASS :: ${name}`)
+    return
+  }
+  failures += 1
+  console.log(`FAIL :: ${name}${detail === '' ? '' : `\n         ${detail}`}`)
 }
 
 /** Structural deep equality via canonical JSON (config rows are plain JSON data). */
@@ -286,8 +297,34 @@ for (const dir of hostHalves) {
 // ── 9. Manifest and shipped-file invariants ────────────────────────────────
 const manifest = JSON.parse(readFileSync(join(BUNDLE_DIR, 'package.json'), 'utf8'))
 check('[9] package.json 不含任何生命周期脚本', manifest.scripts === undefined)
-check('[9] dependencies 恰为 ssh2 / schemastery / ws（vendored 代码的运行时依赖）', equalJson(Object.keys(manifest.dependencies ?? {}).sort(), ['schemastery', 'ssh2', 'ws']))
-check('[9] peerDependencies 不再声明上游包（已内联，无需外部提供）', manifest.peerDependencies === undefined)
+// The vendored runtime's dependency set is not a free choice: it is exactly the
+// bare specifiers the vendored modules import. Enumerating it here (rather than
+// deriving it) means a dropped declaration is a hard failure, and family [13]
+// independently cross-checks the same set from the import sites.
+check(
+  '[9] dependencies 恰为 vendored 代码运行时依赖的全集',
+  equalJson(Object.keys(manifest.dependencies ?? {}).sort(), [
+    '@deepseek-ai/dsh-credentials',
+    '@deepseek-ai/dsh-native-command',
+    '@deepseek-ai/dsh-output-retention',
+    '@deepseek-ai/dsh-settings',
+    '@deepseek-ai/dsh-typert-protocol',
+    '@deepseek-ai/dsh-util-values',
+    '@deepseek-ai/schemastery',
+    'schemastery',
+    'ssh2',
+    'ws',
+  ]),
+  `实际: ${JSON.stringify(Object.keys(manifest.dependencies ?? {}).sort())}`,
+)
+// `@deepseek-ai/cordis` is a PEER, matching how `dsh-base` and `dsh-web-app`
+// declare it: it is the framework the profile supplies, never a dependency of
+// a bundle. It must be pinned exactly, as both bundles do.
+check(
+  '[9] peerDependencies 恰为 @deepseek-ai/cordis@4.0.2（框架由 profile 提供）',
+  equalJson(manifest.peerDependencies ?? {}, { '@deepseek-ai/cordis': '4.0.2' }),
+  `实际: ${JSON.stringify(manifest.peerDependencies ?? {})}`,
+)
 check('[9] version === 0.3.0', manifest.version === '0.3.0')
 check('[9] files 包含 LICENSE', manifest.files?.includes('LICENSE') === true)
 check('[9] files 包含 README.md', manifest.files?.includes('README.md') === true)
@@ -392,6 +429,130 @@ check('[12] lib/ 下只有 index.js', equalJson(readdirSync(join(BUNDLE_DIR, 'li
 check(
   '[12] tool-remote-host 由本层作为 vendored 行提供',
   literalNames[actualOrder.indexOf('tool-remote-host')] === './vendor/tool-remote-host/lib/index.js',
+)
+
+// ── 13. Every bare import in the vendor tree is accounted for ──────────────
+// This family exists because 0.3.0 shipped a real install-breaking defect that
+// nothing here caught: `vendor/host-remote-host-ssh` imports the SCOPED fork
+// `@deepseek-ai/schemastery`, but `package.json` declared only the native
+// `schemastery@^3.18.2` — a version that does not exist (native versions stop
+// at 3.18.0). `dsh plugin add` therefore failed with
+// `ERR_PNPM_NO_MATCHING_VERSION`. The green run was an artifact of this file
+// executing inside the harness source tree, where `pnpm-workspace.yaml` has
+// `overrides: {'@deepseek-ai/schemastery': 'link:vendor/schemastery'}` and the
+// bare name resolves to something regardless of what we declare.
+//
+// The rule that must hold INSTEAD is independent of any resolver: each bare
+// specifier a vendored runtime module imports must be either (a) imported by
+// relative path (not bare at all), (b) satisfied by a package the published dsh
+// itself provides, or (c) declared in this bundle's own manifest. Anything else
+// can only work on a machine that happens to have the package lying around.
+//
+// Two deliberate exclusions, each verified by reading the import site:
+//   * `react` / `react/jsx-runtime` — client-side bundles (`dsh.client`) are
+//     served through the platform's own module shim, not Node resolution;
+//   * a bare-looking token inside a comment is not an import (the original
+//     scanner counted `from "extension"` in a JSDoc block of the vendored
+//     mermaid copy, which is prose, not code).
+const bundleManifest = JSON.parse(readFileSync(join(BUNDLE_DIR, 'package.json'), 'utf8'))
+const declaredDeps = new Set([
+  ...Object.keys(bundleManifest.dependencies ?? {}),
+  ...Object.keys(bundleManifest.peerDependencies ?? {}),
+])
+/**
+ * Packages the published `dsh` (the install target) brings itself. Derived from
+ * the installed `@deepseek-ai/dsh-base` / `dsh-web-app` manifests rather than a
+ * hand-kept list, so a dependency this bundle may rely on upstream is not
+ * misread as missing.
+ */
+const publishedProvides = new Set()
+for (const pkg of ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app']) {
+  const pkgJson = join(DSH, 'packages/bundle', pkg.replace('@deepseek-ai/dsh-', ''), 'package.json')
+  if (!existsSync(pkgJson)) continue
+  const parsed = JSON.parse(readFileSync(pkgJson, 'utf8'))
+  for (const dep of Object.keys(parsed.dependencies ?? {})) publishedProvides.add(dep)
+}
+/** Specifiers resolved by the host platform rather than by Node. */
+const PLATFORM_PROVIDED = new Set(['react', 'react-dom', 'react/jsx-runtime', 'react/jsx-dev-runtime'])
+
+// Reachability matters here, and getting it wrong in either direction is a
+// real error. Scanning every `.js` under `vendor/` over-reports: the vendored
+// trees carry `.d.ts` companions AND `.js` files that no row can reach, so a
+// scan-everything rule demands dependencies for code that never executes (it
+// wants `@deepseek-ai/dsh-brand` on behalf of `host-remote-host/lib/types/
+// index.js`, which is imported by nothing — `lib/index.js` only imports
+// `@deepseek-ai/cordis`, and no other file references that path). But scanning
+// only each row's entry file under-reports: the defect this family exists for
+// lives two hops down.
+//
+// So the walk starts at the six real entry points and follows relative imports
+// transitively, exactly as Node would. What it reaches is what must resolve.
+const stripComments = (src) => src.replace(/\/\*[\s\S]*?\*\//gu, '').replace(/(^|[^:])\/\/.*$/gmu, '$1')
+
+/**
+ * Module specifiers a file actually imports, statement form only. A bare
+ * `from "x"` match is not enough: the vendored client bundles contain prose and
+ * string literals that read like import syntax — a doc block saying
+ * `exportName from "module"`, and the keyword-table entry `"import export
+ * from"` — neither of which is an import. Requiring the leading keyword
+ * excludes both without needing a full parser.
+ */
+const importsOf = (src) => [
+  ...src.matchAll(/\bimport\s+[\w${}*,\s]*\s*from\s*['"]([^'"]+)['"]/gu),
+  ...src.matchAll(/\bexport\s+[\w${}*,\s]*\s*from\s*['"]([^'"]+)['"]/gu),
+  ...src.matchAll(/(?:^|[\n;])\s*import\s*['"]([^'"]+)['"]/gmu),
+].map((m) => m[1])
+
+const bareImports = new Map()
+const reached = new Set()
+const visit = (file) => {
+  const normalized = resolve(file)
+  if (reached.has(normalized) || existsSync(normalized) === false) return
+  reached.add(normalized)
+  const src = stripComments(readFileSync(normalized, 'utf8'))
+  for (const spec of importsOf(src)) {
+    if (spec.startsWith('node:') || spec.startsWith('file:')) continue
+    if (spec.startsWith('.')) { visit(resolve(dirname(normalized), spec)); continue }
+    const owner = relative(BUNDLE_DIR, normalized).replace(/\\/gu, '/')
+    if (!bareImports.has(spec)) bareImports.set(spec, new Set())
+    bareImports.get(spec).add(owner)
+  }
+}
+// Entry points are the rows this layer actually mounts: `./vendor/<pkg>/lib/index.js`.
+for (const name of literalNames) visit(resolve(BUNDLE_DIR, name))
+
+const packageOf = (spec) => spec.startsWith('@') ? spec.split('/').slice(0, 2).join('/') : spec.split('/')[0]
+const unresolved = []
+for (const [spec] of bareImports) {
+  const pkgName = packageOf(spec)
+  if (PLATFORM_PROVIDED.has(pkgName)) continue
+  if (declaredDeps.has(pkgName)) continue
+  if (publishedProvides.has(pkgName)) continue
+  unresolved.push([spec, [...bareImports.get(spec)].sort()])
+}
+check(
+  '[13] 运行期可达的每个裸导入都有归属（本包声明 / 已发布 dsh 自带）',
+  unresolved.length === 0,
+  unresolved.length === 0
+    ? ''
+    : `未归属: ${unresolved.map(([s, o]) => `${s} (${o.join(' ')})`).join('; ')}`,
+)
+// Guard the walk itself: if the entry points ever stop being reachable the
+// assertion above would pass vacuously over an empty set.
+check('[13] 可达性遍历确实覆盖了 6 个 vendored 包的产物', reached.size >= 6)
+
+// The scoped fork and the native package are DIFFERENT packages with different
+// version lines. Declaring only one of them is the exact defect this family was
+// added for, so both must be present and resolvable.
+check('[13] 声明了 scoped fork @deepseek-ai/schemastery', declaredDeps.has('@deepseek-ai/schemastery'))
+check('[13] 声明了 native schemastery（better-sidebar 使用）', declaredDeps.has('schemastery'))
+// And the version bound must be satisfiable: native schemastery never published
+// a 3.18.2, so `^3.18.2` resolves to nothing while `^3.18.0` resolves to 3.18.0.
+const nativeRange = bundleManifest.dependencies?.schemastery ?? ''
+check(
+  '[13] native schemastery 的版本范围可满足（不含从未发布的 3.18.2）',
+  /^\^3\.18\.[01]$/u.test(nativeRange),
+  `实际: ${nativeRange}`,
 )
 
 console.log(failures === 0 ? '\n>>> ALL BUNDLE CHECKS PASS' : `\n>>> ${failures} FAILURES`)

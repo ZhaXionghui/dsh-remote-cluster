@@ -30,9 +30,19 @@
     }
   },
   "dependencies": {
-    "schemastery": "^3.18.2",
+    "@deepseek-ai/dsh-credentials": "^0.1.5-rc.3",
+    "@deepseek-ai/dsh-native-command": "^0.1.5-rc.3",
+    "@deepseek-ai/dsh-output-retention": "^0.1.5-rc.3",
+    "@deepseek-ai/dsh-settings": "^0.1.5-rc.3",
+    "@deepseek-ai/dsh-typert-protocol": "^0.1.5-rc.3",
+    "@deepseek-ai/dsh-util-values": "^0.1.5-rc.3",
+    "@deepseek-ai/schemastery": "3.18.2",
+    "schemastery": "^3.18.0",
     "ssh2": "^1.17.0",
     "ws": "^8.18.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "4.0.2"
   },
   "repository": {
     "type": "git",
