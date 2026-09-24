@@ -135,7 +135,7 @@ pnpm installs them into the profile, where the vendored code resolves them:
 
 | Package | Declared range | Purpose | Licence |
 |---|---|---|---|
-| `schemastery` | `^3.18.2` | host-half config schema | MIT |
+| `schemastery` | `^3.18.0` | host-half config schema | MIT |
 | `ws` | `^8.18.0` | host-half WebSocket server | MIT |
 
 Its browser halves (`lib/client*.js`) `require(...)` only `react`,
@@ -146,11 +146,59 @@ by the Web client's static module seed and need no Node resolution.
 
 ## 3. Runtime dependencies declared by this bundle
 
+Eleven packages, in three groups. Getting this list wrong makes the bundle
+**uninstallable**, so it is pinned by an assertion rather than maintained by
+hand — see `tools/verify-bundle.mjs` family `[13]`, which walks the vendored
+import graph and fails if any specifier it reaches has no owner here.
+
 | Package | Declared range | Used by | Licence |
 |---|---|---|---|
+| `@deepseek-ai/dsh-credentials` | `^0.1.5-rc.3` | `vendor/host-remote-host-ssh` | MIT |
+| `@deepseek-ai/dsh-native-command` | `^0.1.5-rc.3` | `vendor/host-remote-host-ssh` | MIT |
+| `@deepseek-ai/dsh-output-retention` | `^0.1.5-rc.3` | `vendor/host-remote-host-ssh` | MIT |
+| `@deepseek-ai/dsh-util-values` | `^0.1.5-rc.3` | `vendor/host-remote-host-ssh` | MIT |
+| `@deepseek-ai/dsh-settings` | `^0.1.5-rc.3` | `vendor/better-sidebar` | MIT |
+| `@deepseek-ai/dsh-typert-protocol` | `^0.1.5-rc.3` | `vendor/remote-host-controller` | MIT |
+| `@deepseek-ai/schemastery` | `3.18.2` | `vendor/host-remote-host-ssh` | MIT |
+| `schemastery` | `^3.18.0` | `vendor/better-sidebar` | MIT |
 | `ssh2` | `^1.17.0` | `vendor/host-remote-host-ssh` | MIT |
-| `schemastery` | `^3.18.2` | `vendor/better-sidebar` | MIT |
 | `ws` | `^8.18.0` | `vendor/better-sidebar` | MIT |
+| `zod` | `^4.4.3` | `vendor/remote-host-controller` (`./typert` subpath) | MIT |
+
+### `schemastery` and `@deepseek-ai/schemastery` are two different packages
+
+This is the single easiest mistake to make here, and 0.3.0 shipped with it:
+
+| Package | Latest on npm | Imported by |
+|---|---|---|
+| `schemastery` (native) | `3.18.0` | `vendor/better-sidebar` |
+| `@deepseek-ai/schemastery` (scoped fork) | `3.18.4` | `vendor/host-remote-host-ssh` |
+
+The native package has **never published a 3.18.2**, so declaring
+`schemastery: "^3.18.2"` — as this bundle originally did — resolves to nothing
+and `dsh plugin add` aborts with `ERR_PNPM_NO_MATCHING_VERSION`. Both must be
+declared, each with a satisfiable range.
+
+The failure was invisible in the harness source tree because
+`pnpm-workspace.yaml` there carries
+`overrides: {'@deepseek-ai/schemastery': 'link:vendor/schemastery'}`, so the
+bare name resolved to *something* regardless of what was declared. That is why
+the check now derives its verdict from the import graph and the manifest
+instead of trusting that a resolution succeeded locally.
+
+### Why `zod` is declared even though nothing `import`s it directly
+
+`vendor/remote-host-controller` publishes the typert RPC surface through its
+`exports` map:
+
+```json
+{ "./typert": "./lib/typert.host.js", "./remote": "./lib/typert.remote-client.js" }
+```
+
+The framework loads those files **by subpath**, not through a static `import`,
+and both begin with `import { z } from 'zod'`. A walk seeded only from the
+patch rows would miss them, which is why the assertion also seeds from every
+vendored `exports` target.
 
 These are ordinary `dependencies`: pnpm installs them from the registry into the
 profile's `node_modules`, and the vendored code resolves them from there.

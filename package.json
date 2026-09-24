@@ -39,7 +39,8 @@
     "@deepseek-ai/schemastery": "3.18.2",
     "schemastery": "^3.18.0",
     "ssh2": "^1.17.0",
-    "ws": "^8.18.0"
+    "ws": "^8.18.0",
+    "zod": "^4.4.3"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "4.0.2"

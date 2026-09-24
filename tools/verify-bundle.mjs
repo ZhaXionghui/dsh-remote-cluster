@@ -314,6 +314,7 @@ check(
     'schemastery',
     'ssh2',
     'ws',
+    'zod',
   ]),
   `实际: ${JSON.stringify(Object.keys(manifest.dependencies ?? {}).sort())}`,
 )
@@ -454,6 +455,7 @@ check(
 //   * a bare-looking token inside a comment is not an import (the original
 //     scanner counted `from "extension"` in a JSDoc block of the vendored
 //     mermaid copy, which is prose, not code).
+const VENDOR_ROOT = join(BUNDLE_DIR, 'vendor')
 const bundleManifest = JSON.parse(readFileSync(join(BUNDLE_DIR, 'package.json'), 'utf8'))
 const declaredDeps = new Set([
   ...Object.keys(bundleManifest.dependencies ?? {}),
@@ -521,6 +523,24 @@ const visit = (file) => {
 // Entry points are the rows this layer actually mounts: `./vendor/<pkg>/lib/index.js`.
 for (const name of literalNames) visit(resolve(BUNDLE_DIR, name))
 
+// ...plus every target reachable through each vendored manifest's `exports` map.
+// The patch row is not the only way in. The typert framework loads a package's
+// generated RPC surface through the `./typert` subpath — `remote-host-controller`
+// publishes `{'./typert': './lib/typert.host.js', './remote': './lib/typert.remote-client.js'}`
+// — and those files import `zod`. Nothing statically imports them, so a walk
+// seeded only from the rows would miss a dependency that genuinely loads at
+// runtime on any host that uses the remote-host RPC surface.
+for (const dir of readdirSync(VENDOR_ROOT) ) {
+  const manifestPath = join(VENDOR_ROOT, dir, 'package.json')
+  if (existsSync(manifestPath) === false) continue
+  const exported = JSON.parse(readFileSync(manifestPath, 'utf8')).exports ?? {}
+  for (const target of Object.values(exported)) {
+    const rel = typeof target === 'string' ? target : target?.default
+    if (typeof rel !== 'string' || rel.startsWith('.') === false) continue
+    visit(resolve(VENDOR_ROOT, dir, rel))
+  }
+}
+
 const packageOf = (spec) => spec.startsWith('@') ? spec.split('/').slice(0, 2).join('/') : spec.split('/')[0]
 const unresolved = []
 for (const [spec] of bareImports) {
@@ -554,6 +574,12 @@ check(
   /^\^3\.18\.[01]$/u.test(nativeRange),
   `实际: ${nativeRange}`,
 )
+// The notices document this dependency set for a human reader. If the manifest
+// and the document disagree, the document is what a consumer will believe, so
+// each declared package must actually be named in the dependencies table.
+for (const dep of declaredDeps) {
+  check(`[13] THIRD-PARTY-NOTICES.md 记录了依赖 ${dep}`, notices.includes(`\`${dep}\``))
+}
 
 console.log(failures === 0 ? '\n>>> ALL BUNDLE CHECKS PASS' : `\n>>> ${failures} FAILURES`)
 process.exit(failures === 0 ? 0 : 1)

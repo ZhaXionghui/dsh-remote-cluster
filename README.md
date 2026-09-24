@@ -268,7 +268,9 @@ node tools/boot-smoke.mjs       # 真实 boot 冒烟
 
 ### 4. 宿主要求
 
-`engines.node` 为 `^22.19 || >=24`。`ssh2` / `ws` / `schemastery` 是普通 `dependencies`，由 pnpm 从 registry 装进 profile。
+`engines.node` 为 `^22.19 || >=24`。本包声明 **11 个** `dependencies`（6 个 `@deepseek-ai/dsh-*` 上游包、`@deepseek-ai/schemastery` 与 `schemastery` 两个不同的包、`ssh2`、`ws`、`zod`）以及一个 `peerDependencies`：`@deepseek-ai/cordis@4.0.2`（框架由 profile 提供，与 `dsh-base` / `dsh-web-app` 的声明方式一致）。pnpm 会从 registry 把这些装进 profile，vendored 代码从那里解析。
+
+完整清单与「为什么 `schemastery` 和 `@deepseek-ai/schemastery` 是两个不同的包」见 `THIRD-PARTY-NOTICES.md` 第 3 节。这份清单由 `tools/verify-bundle.mjs` 的 `[13]` 断言族守住：它从 patch 的 6 个入口出发，沿相对 import 与各 vendored manifest 的 `exports` 子路径做**运行期可达性遍历**，任何一个可达的裸导入没有归属就硬失败。
 
 ---
 
