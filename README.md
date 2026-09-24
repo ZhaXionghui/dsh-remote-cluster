@@ -212,11 +212,28 @@ node tools/verify-bundle.mjs    # 结构 + 真实 loader 解析 + 真实模块�
 node tools/boot-smoke.mjs       # 真实 boot 冒烟
 ```
 
-（如果沙箱拦截递归删除，加 `CODEBUDDY_SAFE_DELETE_ENABLED=0`。）
+（如果沙箱拦截递归删除，加 `CODEBUDDY_SAFE_DELETE_ENABLED=0`；若 `node` 被 shim 包裹，还要 `NODE_OPTIONS=''`——原因见 `tools/boot-smoke.mjs` 里 `SAFE_DELETE_ENV` 的注释。）
 
-`verify-bundle.mjs` 是**本包的主要证据**：它用真实 loader 解析 patch、真实 import 每个 vendored 产物、在活 context 上激活每一对服务，并用引擎自己的 `interpolate` 求值那条 `!!js` 表达式。本机实测 **132 PASS / 0 FAIL**。
+`verify-bundle.mjs` 是**本包的主要证据**：它用真实 loader 解析 patch、真实 import 每个 vendored 产物、在活 context 上激活每一对服务，并用引擎自己的 `interpolate` 求值那条 `!!js` 表达式。本机实测 **153 PASS / 0 FAIL**。
 
-`boot-smoke.mjs` 在**已发布的 npm dsh** 上应给出全 PASS；在**本仓库开发机**（源码工作区 harness，见「已知限制 1」）上会把依赖 boot 的两节标成 `SKIP`，并打印原因。两种情况下退出码都是 0，**但 `SKIP` 不是 `PASS`**：看到 `SKIP` 就说明本次运行没有验证 boot 行为。
+`boot-smoke.mjs` 有**两种形态**，脚本会先用 `--dump-config` 判定当前是哪种（不是猜）：
+
+| 形态 | 判定依据 | 结果 |
+|---|---|---|
+| **已发布 npm dsh**（本包的目标形态） | base 不含那六个 id | **`>>> BOOT SMOKE PASS`，无 SKIP** —— `[A]` 与 `[无本层]` 都真正跑了 |
+| **本仓库源码工作区** | in-tree base 已声明那六个 id | 退出码 0，但 `[A]`/`[无本层]` 被标 `SKIP` 并打印原因 |
+
+指向已发布形态：
+
+```bash
+DSH_SMOKE_DSH=<安装目录> \
+DSH_SMOKE_CLI=<安装目录>/node_modules/@deepseek-ai/dsh/lib/bin.js \
+  node tools/boot-smoke.mjs
+```
+
+**`SKIP` 不是 `PASS`**：看到 `SKIP` 就说明本次运行没有验证 boot 行为。
+
+已发布形态的 `[A]` 实测断言（全部 PASS）包括：boot 到开始服务、fixture 写出已解析清单、注册表里恰好 2 台主机、`gpu-cluster` 的 `kind`/`hostname`/`user` 与 `build-server` 的 `port=2222` 均正确、`label` 原样传递、以及 `env` 未设时回落为空清单——即那条 `!!js` hosts 表达式与整条 remote-host 栈端到端工作。
 
 ---
 
@@ -303,7 +320,46 @@ node tools/boot-smoke.mjs       # 真实 boot 冒烟
 
 本包内联的上游产物面向 `0.1.5-rc.3` 生态。宿主 dsh 大版本变化时，vendored 的产物可能不再兼容——升级 dsh 后请重跑 `tools/verify-bundle.mjs`。
 
-### 4. 宿主要求
+### 4. 没有「原生终端认证」这条路
+
+上游 remote-host 子系统有一条**可选**能力：在原生终端里完成密码 / MFA / 主机密钥 / 私钥口令提示，从而绕过浏览器轮询。**本包不提供它。**
+
+原因是上游调用的 `openNativeTerminal`（`@deepseek-ai/dsh-native-command`）**从未随任何版本发布**——它在源码提交 `c36edb349f` 里新增，排在 `3f1b46a5db release(dsh): 0.1.2-alpha.2` 之后。已发布的 `0.1.5-rc.3` 只导出：
+
+```
+canOpenNativePath · nativeFileManager · openNativePath
+openNativeTextFile · revealNativePath · runNativeCommand
+```
+
+而这是个**静态 ESM 绑定**，失败发生在链接期而非解析期，所以 `node --check` 看不出、`[13]` 断言族也看不出；只有该行真正加载时才炸，而且会**整棵插件树一起失败**：
+
+```
+Error: dsh: plugin tree failed to load: failed to import loader entry
+remote-hosts-ssh (.../vendor/host-remote-host-ssh/lib/index.js):
+The requested module '@deepseek-ai/dsh-native-command' does not provide
+an export named 'openNativeTerminal'
+```
+
+**处理方式**：把该启动器改成显式抛 `TERMINAL_UNAVAILABLE`。这不是权宜之计——该能力在 Service Definition 里本来就是可选的，缺 `openTerminal` 时**上游自己就抛这个错误**（`vendor/host-remote-host/lib/index.js:125`），SSH backend 也会走到同一分支（`vendor/host-remote-host-ssh/lib/index.js:1247`），controller 把它映射成 `remote-host/terminal-unavailable`，调用方已有处理。
+
+**影响**：失去「在原生终端里认证」的快捷路径；**面板内认证路径完全不受影响**，仍可建立由 DSH 管理的连接。
+
+**回归防护**：`tools/verify-bundle.mjs` 的 `[14]` 断言族现在会对**每一个可达的具名导入**核对它在真实已发布包里的存在性。它**刻意优先用已发布安装而不是本仓库的源码链接**：源码链接报 `0.1.2-alpha.2`，那个版本的 `dsh-session` 不导出 `SessionLogOffset`，而已发布的 `0.1.5-rc.3` 导出——拿未发布的版本去判定 vendored 代码，只会造出消费者碰不到的假缺陷。只有源码链接的包会被标成 `SKIP`，不会被判失败。
+
+#### 一个已排查的疑点：`@deepseek-ai/dsh-session` 没有声明为本包依赖
+
+`better-sidebar` 从 `@deepseek-ai/dsh-session` 导入 `SessionLogOffset`，但本包的 `dependencies` 里**没有**它。这不缺，因为**宿主侧负责**：`dsh-base@0.1.5-rc.3` 自己就声明了 `@deepseek-ai/dsh-session: ^0.1.5-rc.3`，且 `resolveBundleDir` 会**从 dsh 安装目录或 profile** 解析（`dsh-app-boot/lib/index.js:831`）。这条链已在**真实消费者场景**下实测：
+
+| 场景 | 结果 |
+|---|---|
+| 把 bundle 以 `file:` 装进**全新 \$DSH_HOME**（真实副本，无 `node_modules`） | ✅ `dsh web: http://127.0.0.1:63927/?token=…` |
+| 该 profile 的 `node_modules/@deepseek-ai/` 内容 | 只有本包声明的 8 个 + `dsh-brand` + `schemastery`；**没有** `dsh-session` |
+| `dsh-session` 实际来源 | dsh 安装目录 `node_modules/@deepseek-ai/dsh-session@0.1.5-rc.3`（导出 `SessionLogOffset`） |
+
+**排查过程中一度误判为缺陷**：在本仓库开发机上，bundle 目录被软链到源码树，而源码树自带的 `node_modules/@deepseek-ai/dsh-session` 指向 `packages/core/session`（`0.1.2-alpha.2`，**不**导出该符号）。当解析回落到这个链接时，boot 会以
+`better-sidebar … does not provide an export named 'SessionLogOffset'` 失败——**这是开发脚手架的产物，不是发布形态的问题**：真实安装中该符号由 dsh 安装目录提供，上面的实测表就是证据。`[14]` 断言族选择只按已发布安装判定，正是为了避免把这类脚手架假象当成缺陷。
+
+### 5. 宿主要求
 
 `engines.node` 为 `^22.19 || >=24`。本包声明 **11 个** `dependencies`（6 个 `@deepseek-ai/dsh-*` 上游包、`@deepseek-ai/schemastery` 与 `schemastery` 两个不同的包、`ssh2`、`ws`、`zod`）以及一个 `peerDependencies`：`@deepseek-ai/cordis@4.0.2`（框架由 profile 提供，与 `dsh-base` / `dsh-web-app` 的声明方式一致）。pnpm 会从 registry 把这些装进 profile，vendored 代码从那里解析。
 

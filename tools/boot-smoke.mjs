@@ -201,6 +201,41 @@ const BUNDLES = ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', 'dsh-remot
 // the same effect from their package manager laying the deps down next to the
 // bundle during `dsh plugin add`.
 const BUNDLE_COPY = ['package.json', 'cordis.patch.yml', 'lib', 'vendor', 'node_modules', 'README.md', 'LICENSE']
+/**
+ * Harness packages whose copy must be re-pointed at the CLI being booted.
+ *
+ * This repo's `node_modules/@deepseek-ai/*` are junctions into the SOURCE
+ * WORKSPACE. That is fine for `verify-bundle.mjs`, which only reads them, but
+ * wrong for a boot: the fixture copies the bundle's `node_modules` into a temp
+ * profile, and `better-sidebar` then resolves `@deepseek-ai/dsh-session` through
+ * those copies. The source tree reports `0.1.2-alpha.2`, whose `dsh-session`
+ * does NOT export `SessionLogOffset` — so `[A]` died on
+ * `better-sidebar … does not provide an export named 'SessionLogOffset'`
+ * while the real published install boots fine, because there the symbol comes
+ * from the dsh installation (`dsh-base` depends on `dsh-session@^0.1.5-rc.3`).
+ *
+ * The fix keeps the fixture honest in both shapes: for every package the bundle
+ * links, prefer the copy inside the CLI installation being tested, and fall back
+ * to the repo's link only when the installation has no such package. On the
+ * source-workspace shape the installation IS the workspace, so nothing changes;
+ * on the published shape the fixture stops inheriting `0.1.2-alpha.2`.
+ */
+const HARNESS_REPOINT = ['@deepseek-ai/dsh-session']
+/**
+ * `<installation>/node_modules`, derived from the CLI entry being booted.
+ *
+ * Both separators are matched on purpose. `BIN` comes from
+ * `DSH_SMOKE_CLI`/`DSH_SMOKE_DSH`, and callers here pass forward-slash paths
+ * (`D:/Dev/_pubsh/...`) because they are written in this repo's docs — while
+ * `path.sep` on Windows is `\`. Matching only `path.sep` finds nothing and the
+ * re-pointing silently does not happen, which is exactly the silent no-op that
+ * would let `[A]` keep failing for a reason nobody can see.
+ */
+const CLI_INSTALLATION = (() => {
+  const at = Math.max(BIN.lastIndexOf('/node_modules/'), BIN.lastIndexOf('\\node_modules\\'))
+  if (at === -1) return undefined
+  return BIN.slice(0, at + '/node_modules'.length)
+})()
 const SPAWN_TIMEOUT_MS = 120_000
 /**
  * Forced into every booted child's environment.
@@ -386,9 +421,42 @@ function createFixture({ withBundle = true, injectFixture = true } = {}) {
     for (const entry of BUNDLE_COPY) {
       copyPreservingLinks(join(BUNDLE_DIR, entry), join(bundleDir, entry))
     }
+    repointHarnessPackages(join(bundleDir, 'node_modules'))
   }
 
   return { home, marker: join(home, 'hosts.json'), bundleDir }
+}
+
+/**
+ * Re-point the copied harness links at the CLI installation being booted.
+ *
+ * See {@link HARNESS_REPOINT} for why this is required. Done here, after the
+ * copy, because `copyPreservingLinks` faithfully reproduces this repo's source
+ * junctions — which is correct for the files it copies and wrong for the
+ * packages a boot will actually resolve.
+ *
+ * A no-op when the installation has no copy of a package, so the
+ * source-workspace shape is unaffected.
+ *
+ * @param copiedModules - the fixture bundle copy's `node_modules` directory.
+ */
+function repointHarnessPackages(copiedModules) {
+  if (CLI_INSTALLATION === undefined) return
+  const repointed = []
+  for (const name of HARNESS_REPOINT) {
+    const installed = join(CLI_INSTALLATION, name)
+    const copied = join(copiedModules, name)
+    if (existsSync(installed) === false || existsSync(copied) === false) continue
+    rmSync(copied, { recursive: true, force: true })
+    symlinkSync(installed, copied, 'junction')
+    repointed.push(name)
+  }
+  // Printed, not silent: this step failing to match is invisible in the result
+  // (the boot simply keeps using the stale source links) and shows up much later
+  // as an unexplainable `[A]` failure.
+  if (repointed.length > 0) {
+    console.log(`repointed ${repointed.join(', ')} -> ${CLI_INSTALLATION}`)
+  }
 }
 
 /**
@@ -487,7 +555,21 @@ function bootOnce(home, marker, hostsEnv) {
       } catch (error) {
         parseError = String(error)
       }
-      settleRun({ code: code ?? -1, stdout, stderr, hosts, parseError, timedOut })
+      settleRun({
+        code: code ?? -1,
+        stdout,
+        stderr,
+        hosts,
+        parseError,
+        timedOut,
+        // `dsh web` is a SERVER: on success it prints its URL and then keeps
+        // serving until something kills it, so the normal outcome is the timeout
+        // firing (code=-1, timedOut=true) rather than a clean exit 0. Judging
+        // "did it boot" by `code === 0` therefore reports every healthy boot as
+        // a failure. The URL on stdout is the signal that actually distinguishes
+        // "started serving" from "never got there".
+        served: /dsh web: https?:\/\//u.test(stdout),
+      })
     })
   })
 }
@@ -579,28 +661,46 @@ function assertRun(label, run, baseBooting = true) {
   }
   // The two environment-dependent assertions.
   const upstream = upstreamFailureRow(run.stderr)
-  if (baseBooting) {
-    check(`[${label}] 进程正常退出（exit 0）`, run.code === 0)
-    if (run.code !== 0) {
-      console.log(`       exit=${run.code}${upstream === undefined ? '' : ` — 首因 ${upstream}`}`)
+  const booted = run.served === true || (run.code === 0 && Array.isArray(run.hosts))
+  if (baseBooting || booted) {
+    // `served` and `hosts` are the two independent proofs that the tree came up:
+    // the server printed its URL, and the fixture row ran far enough to write
+    // the resolved inventory. Assert whichever the run produced.
+    if (run.served === true) {
+      check(`[${label}] boot 到开始服务（stdout 打印了 dsh web 的 URL）`, true)
+    } else {
+      check(`[${label}] 进程正常退出（exit 0）`, run.code === 0)
+      if (run.code !== 0) {
+        console.log(`       exit=${run.code}${upstream === undefined ? '' : ` — 首因 ${upstream}`}`)
+      }
     }
     check(`[${label}] fixture 写出了已解析清单（boot 真正走到了注册表）`, Array.isArray(run.hosts))
     if (!Array.isArray(run.hosts)) console.log(`       marker: ${String(run.parseError)}`)
   } else {
     const row = upstream ?? '(未识别)'
-    if (run.code === 0 && Array.isArray(run.hosts)) {
-      // The environment turned out to boot after all: assert the real thing.
-      check(`[${label}] 进程正常退出（exit 0）`, true)
-      check(`[${label}] fixture 写出了已解析清单（boot 真正走到了注册表）`, true)
-    } else {
-      console.log(`SKIP :: [${label}] 进程正常退出（exit 0） —— 环境限制：上游行 ${row} 导入失败`)
-      console.log(`SKIP :: [${label}] fixture 写出了已解析清单 —— 同上，注册表在本机不可达`)
-    }
+    console.log(`SKIP :: [${label}] boot 到开始服务 / 正常退出 —— 环境限制：上游行 ${row} 导入失败`)
+    console.log(`SKIP :: [${label}] fixture 写出了已解析清单 —— 同上，注册表在本机不可达`)
   }
   for (const needle of FORBIDDEN_STDERR) {
     check(`[${label}] stderr 不含 ${JSON.stringify(needle)}`, run.stderr.includes(needle) === false)
   }
-  check(`[${label}] 未超时`, run.timedOut === false)
+  // A `dsh web` run that reached serving was killed by our own reaper; that is
+  // the expected end of a server, not a timeout failure. Only a run that never
+  // served may be reported as having timed out.
+  check(
+    `[${label}] 未超时`,
+    run.timedOut === false || run.served === true,
+    run.served === true ? '（已开始服务，由本测试主动结束）' : '',
+  )
+  // A failing boot whose first blamed row is not ours is the only case worth
+  // spelling out, and the only case where the stderr is the whole diagnosis.
+  // Without this the suite reports a dozen symptom FAILs and never shows the
+  // one line that explains them, which is how an environment fault gets
+  // mistaken for a defect in this package.
+  if (run.served !== true && run.code !== 0 && upstream === undefined) {
+    console.log(`       ${label} stderr (前 12 行):`)
+    for (const line of run.stderr.split('\n').slice(0, 12)) console.log(`       | ${line}`)
+  }
 }
 
 /**
@@ -691,15 +791,31 @@ async function runSectionA(baseBooting) {
  * Assert the `[无本层]` counterfactual for shape (1), where the base does NOT
  * carry our rows.
  *
- * Without the layer nothing resolves `remoteHosts`, so the boot must fail loudly
- * — the aggregate `plugin tree failed to load` — and, crucially, must NOT blame
- * this package or any of its six row ids: such a mention would mean the layer
- * was still mounted, and then the comparison between [A] and [B] would prove
- * nothing. That negative half is the load-bearing one.
+ * The load-bearing half is the NEGATIVE one: nothing may name this package or
+ * any of its six row ids. A mention would mean the layer was still mounted, and
+ * then comparing `[A]` against `[无本层]` would prove nothing about the layer.
+ * That half holds on every shape and is always asserted.
  *
- * This function is only reached on shape (1). On shape (2) the base owns the
- * ids, so a bare profile simply boots: there is no counterfactual to assert, and
- * `main` reports that state instead of calling this.
+ * The positive half — "the boot must therefore fail" — is NOT asserted, because
+ * it is false for this package's design and measuring it disproved it:
+ *
+ *   a bare profile on the published dsh boots to
+ *   `dsh web: http://127.0.0.1:59034/?token=...` and keeps serving.
+ *
+ * The reason is in the harness itself. `assertEntriesActivated`
+ * (packages/boot/app-boot/src/index.ts:707) only reports entries that are LISTED
+ * and left pending/failed — `for (const entry of ctx.loader.entries())`, then
+ * `pending (waiting for services: …)`. A profile with no layer mounted never
+ * lists a row that injects `remoteHosts`, so there is no entry to leave pending
+ * and nothing to fail. The 0.2.0 guard was what turned that absence into a loud
+ * failure; 0.3.0 retired the guard deliberately (it now provides `remoteHosts`
+ * itself, so `inject: ['remoteHosts']` would be a tautology — see README), and
+ * with the guard gone the bare profile is simply a stock dsh. A stock dsh
+ * booting successfully is correct behaviour, not a defect.
+ *
+ * So this records the observed outcome as information and asserts only what is
+ * still meaningful: that the bundle is not implicated. Reporting a healthy stock
+ * boot as a FAIL would be a false alarm about a shape that is working.
  *
  * @param run - the run result of the profile WITHOUT this bundle.
  */
@@ -707,15 +823,18 @@ function assertNoBundleRun(run) {
   const label = '无本层'
   const blamed = [...OWN_ROW_IDS, 'dsh-remote-cluster'].filter(token => run.stderr.includes(token))
   check(`[${label}] stderr 未把故障归给我们（命中：${blamed.join(',') || '无'}）`, blamed.length === 0)
-  check(`[${label}] boot 响亮失败（exit ≠ 0）`, run.code !== 0)
-  check(`[${label}] 未超时`, run.timedOut === false)
-  check(
-    `[${label}] stderr 报告层级加载失败（plugin tree failed to load）`,
-    run.stderr.includes('plugin tree failed to load'),
-  )
-  if (run.code === 0 || run.timedOut) {
-    console.log(`       exit=${run.code} timedOut=${run.timedOut}`)
-    console.log(`       stderr: ${run.stderr.trim()}`)
+  // Kept as an observation, not a verdict. A stock dsh that started serving was
+  // killed by this suite's own reaper, so `timedOut` is the normal success end.
+  const healthyStockBoot = run.served === true || run.code === 0
+  if (healthyStockBoot) {
+    console.log(`INFO :: [${label}] stock dsh 正常启动（served=${run.served === true} exit=${run.code}）—— 预期如此：`)
+    console.log('        没有本层时没有任何行 inject remoteHosts，assertEntriesActivated 无条目可报，')
+    console.log('        boot 成功即正确行为。本节的实质断言是上面「未被归咎」。')
+  } else {
+    console.log(`INFO :: [${label}] stock dsh 未启动（exit=${run.code}），stderr 未归咎本包 —— 同样满足本节意图。`)
+    if (run.stderr.includes('plugin tree failed to load')) {
+      console.log('        报告了层级加载失败，但不是我们的行；可能是宿主自身故障，值得一看。')
+    }
   }
 }
 
@@ -750,7 +869,9 @@ const main = async () => {
     if (baseOwnedIds.length === 0) {
       const probe = await bootOnce(bare.home, bare.marker, undefined)
       assertNoBundleRun(probe)
-      baseBooting = probe.code === 0
+      // See `bootOnce`: a healthy `dsh web` is killed by this suite's own reaper,
+      // so exit code alone cannot answer "did it come up".
+      baseBooting = probe.served === true || probe.code === 0
       baseStderr = probe.stderr
     }
   } finally {
