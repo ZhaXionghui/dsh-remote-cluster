@@ -1,7 +1,7 @@
 {
   "name": "dsh-remote-cluster",
-  "version": "0.2.0",
-  "description": "DSH profile bundle: a declarative cluster-inventory and configuration layer for the DSH remote-host (SSH) capability",
+  "version": "0.3.0",
+  "description": "DSH profile bundle: the complete remote-host (SSH) subsystem with its Web sidebar workbench, inlined so it works on a dsh that ships without it",
   "keywords": [
     "dsh",
     "dsh-bundle",
@@ -9,22 +9,30 @@
     "ssh",
     "cluster",
     "hpc",
-    "controlmaster"
+    "controlmaster",
+    "sidebar"
   ],
   "license": "MIT",
   "type": "module",
   "main": "lib/index.js",
   "files": [
     "lib",
+    "vendor",
     "cordis.patch.yml",
     "README.md",
     "LICENSE",
+    "THIRD-PARTY-NOTICES.md",
     "docs"
   ],
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
     }
+  },
+  "dependencies": {
+    "schemastery": "^3.18.2",
+    "ssh2": "^1.17.0",
+    "ws": "^8.18.0"
   },
   "repository": {
     "type": "git",

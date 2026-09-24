@@ -1,56 +1,103 @@
 # =============================================================================
-# dsh-remote-cluster — 集群清单 / 配置层 + remote-host 接缝守卫
+# dsh-remote-cluster v0.3.0 — remote-host 功能插件（自带实现 + Web 侧栏面板）
 #
-# 本层做两件事：
-#   1) 把 base 的中性默认 `remote-hosts-ssh: hosts: []` 换成「由环境变量供给的
-#      集群清单」，并原样重述 base 的三个默认值；
-#   2) insert 一行守卫插件 `remote-cluster-guard`，它 `inject: ['remoteHosts']`：
-#      目标 dsh 若不含 remote-host 子系统（没有 `remoteHosts` service），该 entry
-#      无法激活、fiber 停在 PENDING，boot 审计据此响亮失败，而不是静默 no-op。
+# 本层把 DSH 的整个「远程主机（remote-host）」子系统连同它依赖的 Web 侧栏
+# 工作台一起内联进本包，因此在**不含**该子系统的 dsh 上也能获得完整能力。
 #
-# 层位：out-of-tree bundle 由 reconcile 追加到 `dsh.profile.bundles` 末尾，
-# 因此在 in-box bundle（dsh-base / dsh-web-app）之后生效，同 id 行后者胜
+# 与 0.2.0 的根本区别：
+#   0.2.0 是一个「配置层 + 守卫」——它假定目标 dsh 已经自带 remote-host 子系统，
+#   只是把 base 的中性默认 hosts: [] 换成环境变量供给的集群清单，并 insert 一行
+#   守卫（inject: ['remoteHosts']）在子系统缺失时让 boot 响亮失败。
+#   0.3.0 是「功能插件」——子系统本身（5 个上游包）与它的 UI 依赖
+#   （dsh-better-sidebar）都由本包携带，不再假定目标 dsh 有它们。
+#   守卫因此退役（见文件末尾说明）。
+#
+# ── 装配方式：为什么用 `./vendor/...` 相对名，而不是裸包名 ──────────────────
+# 这 5 个上游包**在 npm 上不存在**（`npm view @deepseek-ai/dsh-host-remote-host`
+# 返回 E404），已发布 dsh 的 dsh-base / dsh-web-app 也**不声明**它们；唯一来源
+# 就是本仓库内联的副本。裸包名要靠 profile 的 node_modules 解析，而
+# `healProfileModuleFallback`（packages/boot/app-boot/src/profile.ts:643）只会
+# link「能从本包 package.json 按 Node 规则解析到」的依赖——vendored 副本放在
+# `vendor/` 下，名字与位置都不在 Node 的查找路径里，因此裸名解析不到。
+#
+# 反之路径可行：`./vendor/xxx/lib/index.js` 这种相对名会被
+# `anchorInsertedPluginNames`（packages/boot/app-boot/src/index.ts:311-321）在
+# **运行时**重写成锚定本 patch 文件所在目录的绝对 `file://` URL。仓库里存的是
+# 相对字面量，所以在任何机器上 clone、装进任何 profile，重写出来的都是那台机器
+# 上的正确绝对路径 —— 跨机可移植。
+#
+# 同时，`locatePkgJson`（packages/client/modules/src/index.ts:786-820）对
+# pathLike 的名字走 `nearestPackage`（:823-847）向上找最近的 package.json，且
+# expectedPackageName 为 undefined，因此 `vendor/ui-remote-host/package.json`
+# 与 `vendor/better-sidebar/package.json` 能被 client-modules 发现，浏览器
+# bundle 也就随之被投递（`exports["./client"]`）。
+#
+# ── 跨包 import 的处理 ─────────────────────────────────────────────────────
+# remote-host-ssh / tool-remote-host / remote-host-controller 的产物里原本有
+# `import ... from '@deepseek-ai/dsh-host-remote-host'` 这样的**裸包名**跨包引用。
+# 因为该包不在 npm 上、Node 也无法按名字解析到 vendor 目录，这些引用在
+# vendor 时已被改写成指向同级 `vendor/host-remote-host/lib/index.js` 的相对路径
+# （8 处，见 THIRD-PARTY-NOTICES.md）。除这些改写外，产物逐字节保持上游原样。
+#
+# ── 顺序 ───────────────────────────────────────────────────────────────────
+# `better-sidebar` 必须排在 `ui-remote-host` 之前：后者的 dsh.client.inject
+# 声明了 `dsh-better-sidebar`（packages/client/ui-remote-host/src/client 里
+# `inject = ['locale', 'betterSidebar', 'remote', 'remote.remoteHosts']`），
+# 客户端模块图要求被 inject 的行先到达。缺了它，该 entry 会停在 pending，
+# 而 `assertEntriesActive`（packages/client/web/src/boot.ts:138-158）会让整页
+# 白屏（`web boot: 1 entry did not activate`）。
+#
+# ── 层位 ───────────────────────────────────────────────────────────────────
+# out-of-tree bundle 由 reconcile 追加到 `dsh.profile.bundles` 末尾，因此在
+# in-box bundle（dsh-base / dsh-web-app）之后生效，同 id 行后者胜
 # （vendor/include/src/index.ts:110-124）；用户自己的 profile patch 仍在本层之上。
 #
-# 本层刻意不做的事：
-#   * 不 insert 任何 in-box 已存在的行 id —— include 的 insert 不去重 id
-#     （vendor/include/src/index.ts:94），重复 id 会让两个 provider 抢同一注册表。
-#     （本层唯一 insert 的 id 是 `remote-cluster-guard`，base 里不存在这个 id。）
-#   * 不声明 `tool-remote-host`：base 启用它，web-app 故意 `disabled: true`
-#     （packages/bundle/web-app/cordis.patch.yml:351-352）并改由 standard preset 启用
-#     （packages/preset/agent-presets/presets/standard/agent.cordis.yml:78-79）。
-#     本层若声明它会把那个 disabled 覆盖回来，破坏 web profile 的既定设计。
-#
-# config 是「整体替换」而非 merge（vendor/include/src/index.ts:121-124），
-# 所以 base 那三个键必须在下面原样重述，否则会被清成 schema 默认值。
+# ── 本层刻意不做的事 ───────────────────────────────────────────────────────
+#   * 不声明 `tool-remote-host` 的 disabled —— 上游 base 启用它，web-app 故意
+#     disabled: true（packages/bundle/web-app/cordis.patch.yml:351-352）并改由
+#     standard preset 启用。本层 insert 的行 id 都是新的，不会覆盖那个 disabled。
+#   * config 是「整体替换」而非 merge（vendor/include/src/index.ts:121-124），
+#     所以 remote-hosts-ssh 的四个键必须一次写全。
 #
 # `!!js` 三元表达式必须加引号：不加引号时表达式里的 ": " 会被 YAML 当成键分隔符，
 # 配置被静默解析成一个 mapping（不报错，属于最难排查的一类问题）。单引号与双引号等价。
-# 仓库内先例共两处、都是双引号：packages/bundle/base/cordis.patch.yml:250 与
-# packages/bundle/sdk-app/cordis.patch.yml:21；本包用单引号，语义等价。
-# 对照：base/cordis.patch.yml:239 的 `disabled: !!js process.platform === 'win32'` 未加引号且不是三元，不适用本条。
-#
-# 守卫行的 `name` 用「裸包名 + 子路径」：entry 名走 ctx.baseUrl（= profile 根）
-# 解析，本包会被 healProfileModuleFallback 链进 profile 的 node_modules，
-# 因此可移植（先例：packages/bundle/web-app/cordis.patch.yml:106-107 的 web-startup）。
-# 不用 `./` 相对名：相对名只对 insert 行生效、且会被改写成绝对 file: URL，跨机不可移植。
-# 守卫必须走 insert —— 只有 insert 新增的行才会进树、才可能被激活。
 # =============================================================================
-- id: remote-hosts-ssh
-  name: '@deepseek-ai/dsh-host-remote-host-ssh'
-  config:
-    # 集群清单来自环境变量（JSON 数组），未设置或为空则回落 []（即 base 的中性默认），
-    # 因此仓库里不硬编码任何真实集群。每台的认证材料永远不进这里 ——
-    # 私钥走 identityFile / agentSocket，密码走凭据库与 settings。
-    hosts: !!js 'process.env.DSH_REMOTE_CLUSTER_HOSTS ? JSON.parse(process.env.DSH_REMOTE_CLUSTER_HOSTS) : []'
-    # 以下三键与 base 保持一致（见 packages/bundle/base/cordis.patch.yml:96-99）：
-    # password-only 目标走 OpenSSH ControlMaster，保留 900s（对齐原版 HSAgent ControlPersist=900s）。
-    passwordControlMaster: true
-    controlPersistSeconds: 900
-    maxTransferBytes: 268435456
-
-# 守卫：`inject: ['remoteHosts']`。远程 host 子系统缺失时该 entry 停 PENDING，
-# boot 审计（packages/boot/app-boot/src/index.ts:707-738）据此响亮失败。
 - insert:
-    - id: remote-cluster-guard
-      name: dsh-remote-cluster/lib/guard.js
+    # 远程主机注册表与执行能力接缝（提供 `remoteHosts` 服务）。
+    # 上游 id `remote-hosts`；已发布的 dsh-base@0.1.5-rc.3 不含此行（空闲 id）。
+    - id: remote-hosts
+      name: ./vendor/host-remote-host/lib/index.js
+
+    # SSH provider：真正的连接实现。config 的四个键照抄 base 的默认值
+    # （packages/bundle/base/cordis.patch.yml:96-99）。
+    - id: remote-hosts-ssh
+      name: ./vendor/host-remote-host-ssh/lib/index.js
+      config:
+        # 集群清单来自环境变量（JSON 数组），未设置或为空则回落 []（中性默认），
+        # 因此仓库里不硬编码任何真实集群。每台的认证材料永远不进这里 ——
+        # 私钥走 identityFile / agentSocket，密码走凭据库与 settings。
+        hosts: !!js 'process.env.DSH_REMOTE_CLUSTER_HOSTS ? JSON.parse(process.env.DSH_REMOTE_CLUSTER_HOSTS) : []'
+        # password-only 目标走 OpenSSH ControlMaster，保留 900s
+        # （对齐原版 HSAgent ControlPersist=900s）。
+        passwordControlMaster: true
+        controlPersistSeconds: 900
+        maxTransferBytes: 268435456
+
+    # Typert Remote 投影：把已配置主机、基本事实与用户驱动的认证暴露给浏览器。
+    # 上游 id `remote-host-controller`；发布版 dsh-web-app@0.1.5-rc.3 不含此行。
+    - id: remote-host-controller
+      name: ./vendor/remote-host-controller/lib/index.js
+
+    # 面向模型的远程主机工具（消费 `remoteHosts` 接缝）。
+    - id: tool-remote-host
+      name: ./vendor/tool-remote-host/lib/index.js
+
+    # VS Code 式右侧栏工作台，提供 `betterSidebar` 服务。
+    # 内联自 dsh-better-sidebar@0.19.1（MIT，见 vendor/better-sidebar/LICENSE
+    # 与 THIRD-PARTY-NOTICES.md）。必须排在 ui-remote-host 之前。
+    - id: better-sidebar
+      name: ./vendor/better-sidebar/lib/index.js
+
+    # 远程主机面板（Web 侧栏）。消费 `betterSidebar`、`remote`、`remote.remoteHosts`。
+    - id: ui-remote-host
+      name: ./vendor/ui-remote-host/lib/index.js
