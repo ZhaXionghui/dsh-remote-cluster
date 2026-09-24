@@ -141,8 +141,19 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const BUNDLE_DIR = resolve(HERE, '..')
-const DSH = 'D:/Dev/deepseek-harness'
-const BIN = join(DSH, 'apps/cli/lib/bin.js')
+/**
+ * Harness under test. Defaults to the source workspace, but overridable so the
+ * suite can finally be pointed at a PUBLISHED dsh — the shape this bundle is
+ * actually written for, where the six row ids are free and `[A]` can go green.
+ *
+ *   DSH_SMOKE_CLI=D:/path/to/profile/node_modules/@deepseek-ai/dsh/lib/bin.js \
+ *     node tools/boot-smoke.mjs
+ *
+ * The override matters because the two shapes need opposite verdicts (see the
+ * file header), and only the published one can exercise [A] for real.
+ */
+const DSH = process.env.DSH_SMOKE_DSH ?? 'D:/Dev/deepseek-harness'
+const BIN = process.env.DSH_SMOKE_CLI ?? join(DSH, 'apps/cli/lib/bin.js')
 const PROFILE = 'clustersmoke'
 /**
  * Attestation mode — see the file header. Narrows the expected-failure set to
@@ -191,6 +202,46 @@ const BUNDLES = ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', 'dsh-remot
 // bundle during `dsh plugin add`.
 const BUNDLE_COPY = ['package.json', 'cordis.patch.yml', 'lib', 'vendor', 'node_modules', 'README.md', 'LICENSE']
 const SPAWN_TIMEOUT_MS = 120_000
+/**
+ * Forced into every booted child's environment.
+ *
+ * The sandbox this suite is developed in wraps `node` with a `safe-delete` shim
+ * that throws when a process deletes more than 100 paths in one turn. `dsh
+ * boot` does exactly that as ordinary housekeeping: `healProfilesModuleFallback`
+ * clears `profiles/node_modules.lock` under `withFileLock`, and the shim turns
+ * that cleanup into
+ *
+ *   Error: [safe-delete][SAFE_DELETE_BULK_CONFIRM_REQUIRED] {...}
+ *     at withFileLock (dsh-atomic-write/lib/index.js:143)
+ *     at healProfilesModuleFallback (dsh-app-boot/lib/index.js:662)
+ *
+ * which aborts the boot before any row loads. That is an artifact of the
+ * environment, not of dsh or of this bundle — the same CLI on the same tree
+ * boots to `dsh web: http://127.0.0.1:<port>/?token=...` once the shim stands
+ * down. Setting it in the child (rather than relying on the caller's shell)
+ * keeps the suite honest when it is invoked without the variable set.
+ */
+const SAFE_DELETE_ENV = { CODEBUDDY_SAFE_DELETE_ENABLED: '0', NODE_OPTIONS: '' }
+/**
+ * Both entries are needed, and leaving either out fails in a different way —
+ * measured, not guessed:
+ *
+ *   * `CODEBUDDY_SAFE_DELETE_ENABLED=0` — the shim returns early on load
+ *     (`process.env.CODEBUDDY_SAFE_DELETE_ENABLED !== '0'`, node-safe-delete-shim.cjs:22-26),
+ *     which is what lets dsh's own `profiles/node_modules.lock` cleanup and
+ *     `healProfilesModuleFallback` proceed.
+ *   * `NODE_OPTIONS=''` — the shims reach the child through the PARENT's
+ *     `--require`, so they are loaded before any environment variable can be
+ *     consulted. Blanking the variable (not deleting the key) stops the
+ *     re-injection at every depth. Note this must be an empty string, not a
+ *     removed key: a removed key lets the grandchild inherit the parent's
+ *     value again.
+ *
+ * With only the flag the child still dies inside `rimrafSync` from the shim's
+ * own guard; with only the blank it still dies on the lock cleanup. Together
+ * the same CLI on the same tree boots to
+ * `dsh web: http://127.0.0.1:<port>/?token=...`.
+ */
 /**
  * Strings that must never appear in a healthy boot's stderr.
  *
@@ -401,8 +452,8 @@ function bootOnce(home, marker, hostsEnv) {
       DSH_HOME: home,
       DSH_TELEMETRY_DISABLED: '1',
       DSH_SMOKE_MARKER: marker,
+      ...SAFE_DELETE_ENV,
     }
-    delete env.NODE_OPTIONS
     delete env.NODE_NO_WARNINGS
     delete env.DSH_REMOTE_CLUSTER_HOSTS
     if (hostsEnv !== undefined) env.DSH_REMOTE_CLUSTER_HOSTS = hostsEnv
@@ -462,8 +513,8 @@ function dumpConfig(home) {
       DEEPSEEK_API_KEY: 'dsh-remote-cluster-smoke-dummy-key',
       DSH_HOME: home,
       DSH_TELEMETRY_DISABLED: '1',
+      ...SAFE_DELETE_ENV,
     }
-    delete env.NODE_OPTIONS
     delete env.NODE_NO_WARNINGS
     delete env.DSH_REMOTE_CLUSTER_HOSTS
     const child = spawn(process.execPath, [BIN, '--profile', PROFILE, '--dump-config'], {

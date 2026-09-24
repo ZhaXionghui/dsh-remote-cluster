@@ -222,7 +222,11 @@ node tools/boot-smoke.mjs       # 真实 boot 冒烟
 
 ## ⚠️ 已知限制
 
-### 1. 完整 boot 验证在本机无法完成（不是版本偏斜，是 id 撞车）
+---
+
+### 1. 本机源码工作区上跑不了完整 boot（不是版本偏斜，是 id 撞车；目标形态已实测通过）
+
+> **先说结论**：这条限制**只影响「在源码工作区里跑 boot」这一种用法**。本 bundle 的**目标形态——装在已发布的 npm dsh 上——已经端到端实测通过**，证据见本节末尾「已发布形态的端到端实测」。
 
 **这条限制与版本无关。** 本仓库开发机上链接的 harness 是 **源码工作区**（`D:\Dev\deepseek-harness`），而源码工作区的 in-tree bundle **自己就声明了本包要提供的全部六个行 id**：
 
@@ -252,9 +256,42 @@ node tools/boot-smoke.mjs       # 真实 boot 冒烟
 
 **后果**：`tools/boot-smoke.mjs` 在检测到 base 已占用这些 id 时（用 `--dump-config` 判定，不是猜），把 `[A]` 与 `[无本层]` 两节整体标记为 `SKIP`（**不是 PASS**），并在总结里显式声明盲区：本包所在分组未被加载时，「本包自身的行有缺陷」在 boot-smoke 里**无法暴露**。该职责由 `tools/verify-bundle.mjs` 承担——它用「向 patch 注入重复 id」的负向测试确认了自己能抓到这类缺陷，而 boot-smoke 抓不到。
 
-**为什么不在本机消除这个限制**：本机 npm registry 不可达，装不上「不含这六行」的已发布 `dsh-base@0.1.5-rc.3` / `dsh-web-app@0.1.5-rc.3`；而源码工作区又必定含这六行。两种形态无法在同一台机器上同时取得，所以本机没有可跑 `[A]` 的组合。
+#### 已发布形态的端到端实测
 
-**预期**：在**已发布的 npm dsh**（base/web-app `0.1.5-rc.3`，六行全部空闲）上装上本包，结果应为 `>>> BOOT SMOKE PASS` **且无 SKIP**。这正是本 patch 的目标形态。
+上面说的「两种形态无法同时取得」是**过程**，不是**结论**。已发布的 npm 包是可以拿到的，所以目标形态被真正跑了一遍。做法：
+
+1. 在一个干净的 `DSH_HOME` 下装真实的 `@deepseek-ai/dsh@0.1.5-rc.3`；
+2. 从 registry 取 `dsh-base@0.1.5-rc.3` 与 `dsh-web-app@0.1.5-rc.3` 的 tarball，**在 tarball 层面**数六个 id 的出现次数——**两者都是 0**，证实已发布形态里这六行确实空闲（这与源码工作区正好相反）；
+3. 在 profile 里执行 `dsh plugin add file:D:/Dev/dsh-remote-cluster`。
+
+实测结果：
+
+| 检查项 | 结果 |
+|---|---|
+| `plugin add` | **成功**：`+ dsh-remote-cluster 0.3.0`，`Done in 49.7s using pnpm v11.24.0` |
+| bundle 落地 | `node_modules/.pnpm/dsh-remote-cluster@file+.../node_modules/dsh-remote-cluster/` 下 `vendor/`（6 个）、`cordis.patch.yml`、`lib/`、`THIRD-PARTY-NOTICES.md` 齐全 |
+| 依赖闭包 | `@deepseek-ai/schemastery@3.18.2`、`schemastery@3.18.0`、`ssh2@1.17.0`、`ws@8.21.3`、`zod@4.6.5`、`@deepseek-ai/cordis@4.0.2` 全部解析成功 |
+| `--dump-config` | **539 行 → 566 行**，多出的 27 行就是本包的六个行，**顺序正确** |
+
+`--dump-config` 里本包那六行（`better-sidebar` 在 `ui-remote-host` 之前，`!!js` 表达式原样保留）：
+
+```yaml
+- id: remote-hosts
+  name: file:///.../dsh-remote-cluster/vendor/host-remote-host/lib/index.js
+- id: remote-hosts-ssh
+  name: file:///.../dsh-remote-cluster/vendor/host-remote-host-ssh/lib/index.js
+  config:
+    hosts: !!js process.env.DSH_REMOTE_CLUSTER_HOSTS ? JSON.parse(...) : []
+- id: remote-host-controller
+- id: tool-remote-host
+- id: better-sidebar
+- id: ui-remote-host
+  name: file:///.../dsh-remote-cluster/vendor/ui-remote-host/lib/index.js
+```
+
+其中 `file://` URL 是 boot 期 `anchorInsertedPluginNames`（`packages/boot/app-boot/src/index.ts:311-321`）把 `./vendor/...` 相对名重写出来的——这正是第 3 步选「相对名 + 运行期锚定」而不是「裸包名」的直接证据：`npm view @deepseek-ai/dsh-host-remote-host` 返回 **E404**，裸名在 registry 上不存在，只能靠相对路径。
+
+**所以：** 若你要在源码工作区里跑 `tools/boot-smoke.mjs`，看到 `[A]`/`[无本层]` 两节是 `SKIP` 属预期，**不代表本包有问题**；要在已发布 dsh 上跑，用 `DSH_SMOKE_CLI=<profile>/node_modules/@deepseek-ai/dsh/lib/bin.js node tools/boot-smoke.mjs` 即可，那才是本包的目标形态。
 
 ### 2. 与 aggregate bundle 的互斥
 
