@@ -1,15 +1,28 @@
-# _acc/ —— 0.3.0 取证材料
+# _acc/ —— 取证材料
 
 这里不是发布内容（`files` 里没有它），而是**排查过程的原始记录**，保留下来是因为它支撑了
 `package.json` 依赖声明与几个断言族的结论——删掉它，那些结论就只剩结论了。
+
+## 0.4.0 的三份（桌面端问题）
+
+| 文件 | 是什么 |
+|---|---|
+| `BETTER-SIDEBAR-ROOTCAUSE.md` | `turnTail` interception 错误的完整证据链：报错抛点在 `ui-slots/lib/index.js:182` 的 `case "list"`、`conversation.chat.turnTail` 的真实 kind、`dsh-better-sidebar@0.19.1` 写的是旧契约、上游 `dsh-web-app@0.1.7-rc.2` 同样退役了它，以及迁移到的官方契约全貌。 |
+| `YIELD-GUARD-REFUTED.md` | **「行级 `disabled` 自动让位」的实测否证**。静态检查全绿但真实 boot 照旧崩溃；插桩证明抛错时 `loader.store` 是空表（`storeKeys=[]`），因此守卫恒为「不禁用」。含四条使其不可行的结构约束与最终取舍。 |
+| `SYMLINK-PURGE.md` | 源码树符号链接净化：**707 个**链接（不止 `@deepseek-ai` 下的 231 个）使桌面 profile 挂载源码树 bundle，是两行「异常」与 `betterSidebar` 报错的**共同根因**。含执行方式、备份位置与回滚脚本。 |
+| `DESKTOP-DIAGNOSIS.md` | 桌面端问题总览（初版）：现象→真因对照表、客户端真实身份（`0.1.7-rc.2`）、`0.1.7-rc.2` bundle 实测内容、需注意的环境陷阱。 |
+| `SYMLINK-BACKUP.txt` | 707 条链接的 `<路径><TAB><目标>` 清单，供回滚。 |
+
+## 0.3.0 的取证材料
 
 | 文件 | 是什么 |
 |---|---|
 | `DIAGNOSIS.md` | 依赖声明缺陷的独立取证：`schemastery@^3.18.2` 不可满足的根因、scope 前缀丢失、以及 `[11]` 为什么曾是假绿（在源码树里跑，pnpm `overrides` 兜住了裸名解析）。 |
 | `ACCEPTANCE-REPORT.md` | WSL 端到端验收报告。记录了 `openNativeTerminal` 那次排查的**完整证据链**：跨版本导出对比表、引入提交 `c36edb349f`、「该 API 从未随任何版本发布」的论证，以及当时提出的 A/B/C 三条路线。 |
 | `01-install.sh` / `01.log` | 干净安装的复现脚本与输出。 |
-| `02-verify.sh` / `02.log` | 安装后核对（六行是否合成、`file://` 是否生成、依赖闭包）。 |
+| `02-verify.sh` / `02.log` | 安装后核对（行是否合成、`file://` 是否生成、依赖闭包）。 |
 | `03-drift.sh` / `03.log` | 对 vendor 全部 `@deepseek-ai/*` 具名导入做存在性普查。 |
+| `04-boot.sh` / `04.log`、`05-boot.sh` / `05.log` | 真实 boot 验收（含客户端形态）。 |
 | `probe-npm.mjs` | registry 探测（版本、tarball）。 |
 | `scan-deps.mjs` / `analyze-imports.mjs` | 导入图扫描与依赖归属分析。 |
 

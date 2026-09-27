@@ -2,14 +2,15 @@
 
 # 🖧 dsh-remote-cluster
 
-**把 DSH 的整套「远程主机（remote-host）」能力——SSH 连接、面向模型的工具面、以及 Web 侧栏工作台——打包成一个自带实现的 profile bundle，装到不含该子系统的 dsh 上也能直接用。**
+**把 DSH 的整套「远程主机（remote-host）」能力——SSH 连接、面向模型的工具面、以及官方右侧栏里的远程主机面板——打包成一个自带实现的 profile bundle，装到不含该子系统的 dsh 上也能直接用。**
 
 [![dsh bundle](https://img.shields.io/badge/dsh-bundle-4f46e5.svg)](https://github.com/deepseek-ai/deepseek-harness)
-[![Version](https://img.shields.io/badge/version-0.3.0-blue.svg)](https://github.com/ZhaXionghui/dsh-remote-cluster)
+[![Version](https://img.shields.io/badge/version-0.4.0-blue.svg)](https://github.com/ZhaXionghui/dsh-remote-cluster)
+[![dsh](https://img.shields.io/badge/dsh-%E2%89%A5%200.1.7--rc.2-4f46e5.svg)](https://github.com/deepseek-ai/deepseek-harness)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Node](https://img.shields.io/badge/node-%5E22.19%20%7C%20%3E%3D24-brightgreen.svg)](https://nodejs.org)
 
-[这是什么](#这是什么) · [与 0.1/0.2 的区别](#-与-0102-的区别) · [安装](#-安装) · [配置集群清单](#-配置集群清单) · [验证](#-验证) · [已知限制](#-已知限制) · [目录结构](#-目录结构) · [常见问题](#-常见问题)
+[这是什么](#这是什么) · [与旧版区别](#-与旧版区别) · [安装](#-安装) · [配置集群清单](#-配置集群清单) · [验证](#-验证) · [已知限制](#-已知限制) · [目录结构](#-目录结构) · [常见问题](#-常见问题)
 
 </div>
 
@@ -19,49 +20,87 @@
 
 `dsh-remote-cluster` 是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（DSH）的一个 **profile bundle**。
 
-**0.3.0 是一次定位转变：从「配置层」变成「功能插件」。**
+**0.4.0 有两处硬变更：退役自带侧栏，接入官方侧栏；并明确「本层必须在不含 remote-host 行的 dsh 上使用」这一适用边界。**
 
-它现在**自带整个 remote-host 子系统的实现**——5 个上游 `@deepseek-ai/dsh-*` 包连同它们依赖的 UI 侧栏 `dsh-better-sidebar`，全部内联在 `vendor/` 下——因此你**不需要**预先拥有这套能力。从 npm 装的 dsh（`@deepseek-ai/dsh@0.1.5-rc.3` 一类）的 base bundle 里**一行 remote-host 都没有**，装上本包之后就有完整的：
+它**自带整个 remote-host 子系统的实现**——5 个上游 `@deepseek-ai/dsh-*` 包，全部内联在 `vendor/` 下——因此你**不需要**预先拥有这套能力。从 npm 装的 dsh（`@deepseek-ai/dsh@0.1.5-rc.3` 一类）的 base bundle 里**一行 remote-host 都没有**，装上本包之后就有完整的：
 
 - **注册表与接缝**：`remoteHosts` 服务（与 transport 无关的远程主机注册表）；
 - **SSH 实现**：真正的连接、命令、文件传输、ControlMaster 复用；
 - **工具面**：面向模型的 `remote_host_*` 工具；
-- **Web 侧栏**：右侧栏工作台 + 远程主机面板。
+- **Web 侧栏面板**：集成进**官方右侧栏**（`dsh ≥ 0.1.7-rc.2` 自带），不再自带侧栏实现。
 
 ```
 DSH profile 的层序（后者胜，同 id 行逐层覆盖）
 ────────────────────────────────────────────────────────────────────────
   dsh-base                     ← in-box（npm 线：不含任何 remote-host 行）
-  dsh-web-app                  ← in-box
+  dsh-web-app                  ← in-box（≥ 0.1.7-rc.2 自带官方右侧栏）
   dsh-remote-cluster           ← 本包（out-of-tree，reconcile 追加到 bundles 末尾）
-    insert: remote-hosts        ./vendor/host-remote-host/lib/index.js
-    insert: remote-hosts-ssh    ./vendor/host-remote-host-ssh/lib/index.js
-                                config.hosts = DSH_REMOTE_CLUSTER_HOSTS
+    insert: remote-hosts           ./vendor/host-remote-host/lib/index.js
+    insert: remote-hosts-ssh       ./vendor/host-remote-host-ssh/lib/index.js
+                                   config.hosts = DSH_REMOTE_CLUSTER_HOSTS
     insert: remote-host-controller ./vendor/remote-host-controller/lib/index.js
-    insert: tool-remote-host    ./vendor/tool-remote-host/lib/index.js
-    insert: better-sidebar      ./vendor/better-sidebar/lib/index.js
-    insert: ui-remote-host      ./vendor/ui-remote-host/lib/index.js
+    insert: tool-remote-host       ./vendor/tool-remote-host/lib/index.js
+    insert: ui-remote-host         ./vendor/ui-remote-host/lib/index.js
   用户层                       ← 仍在最上面
     profiles/<p>/cordis.patch.yml · $DSH_HOME/cordis.patch.yml · --patch
 ────────────────────────────────────────────────────────────────────────
   生效配置 → Loader 挂载（`!!js` 表达式在此刻求值）
 ```
 
-六个行的 id 在已发布的 `dsh-base@0.1.5-rc.3` / `dsh-web-app@0.1.5-rc.3` 里**全部空闲**，所以 `insert` 不会撞 id（撞了会在 boot 时抛 `duplicate loader entry id`）。
+### 这 5 行为什么是无条件 `insert`（以及它划出的边界）
+
+0.3.0 与本版的 `insert` 都是**无条件**的：include 的 insert 分支是 `data.push(...insert)`，**没有任何去重**（`vendor/include/src/index.ts:93-95`），而且推进的是**宿主 bundle 写过的同一个顶层数组**。一旦目标 dsh 的某个 bundle 已经声明了同 id，这个数组里就有两行同 id，loader 会抛
+
+```
+TypeError: duplicate loader entry id: <id>
+```
+
+（`vendor/loader/src/config/group.ts:59-66`，并在 `:70-78` **回滚整个 group**）。这会在桌面端的插件列表里表现为该 bundle 的行**异常**，而不是被安静跳过。
+
+**为什么不做「不存在才插入」**——曾按这个思路给每行加过 `disabled` 的 `!!js` 守卫，想让 id 已被占用时自动让位：
+
+```yaml
+# 已实测否证，0.4.0 正式版不含此行
+disabled: !!js '... loader.store["<id>"] !== undefined'
+```
+
+它在**静态检查下完全通过**，但真实 boot 照旧崩溃。原因是**求值时机**：`loader.store` 只在 `EntryGroup.create` 里写入（`group.ts:22-23`），而 `create` 由 `update` 在重复检查（`:59-66`）**之后**调用。插桩抛错点实测：
+
+```
+DBGGUARD throw id=remote-hosts storeKeys=[]        ← store 是空表
+  configIds=[..., "remote-hosts", ..., "remote-hosts", ...]   ← 冲突在同一次调用的扁平数组内
+```
+
+守卫读到的永远是 `undefined`，于是恒为「不禁用」，一行都拦不住。也没有别的绕法：`PatchOptions` 没有 delete/rename 键（`include/src/index.ts:145-160`），嵌套 `group` 也共享同一棵树（`group.ts:119`）。完整否证过程见 [`_acc/YIELD-GUARD-REFUTED.md`](_acc/YIELD-GUARD-REFUTED.md)。
+
+替代方案「不 insert、只改已有行」在语义上确实天然容忍缺失（目标行不存在时只是 warn + skip，`app-boot/src/index.ts:327-331` 明确保证），但它**只能改已存在的行、不能新增**——在目标 dsh 完全没有这些行时（本包的主要场景）将什么都不提供。两种语义互斥，本包选择「提供」，并把适用边界写成硬约束，见[已知限制 1](#1-目标-dsh-必须是--017-rc2)。
 
 ---
 
-## 🔄 与 0.1/0.2 的区别
+## 🔄 与旧版区别
 
-| | 0.1.0 | 0.2.0 | **0.3.0** |
-|---|---|---|---|
-| 定位 | 配置层 | 配置层 + 守卫 | **功能插件（自带实现）** |
-| 提供 remote-host 能力？ | ❌ 只配置别人提供的 | ❌ 只配置别人提供的 | ✅ **自带 5 个上游包** |
-| 提供 Web 侧栏？ | ❌ | ❌ | ✅ **自带 better-sidebar + ui-remote-host** |
-| 目标 dsh 缺该子系统时 | **静默 no-op**（危险） | **启动即 exit 1**（响亮） | **正常工作**（能力由本包提供） |
-| 顶层 patch 条目 | 2（1 override + 1 insert） | 2（同上，insert 的是守卫） | **1（一个 `insert:` 装 6 行）** |
-| `lib/guard.js` | — | 有（41 行守卫） | **已移除**（见下） |
-| 在 npm 装的 dsh 上 | 不生效 | 启动失败 | **完整可用** |
+| | 0.1.0 | 0.2.0 | 0.3.0 | **0.4.0** |
+|---|---|---|---|---|
+| 定位 | 配置层 | 配置层 + 守卫 | 功能插件 | **功能插件（官方侧栏）** |
+| 提供 remote-host 能力？ | ❌ | ❌ | ✅ 自带 5 个上游包 | ✅ 自带 5 个上游包 |
+| 提供 Web 侧栏？ | ❌ | ❌ | 自带 `better-sidebar` | ✅ **集成官方右侧栏** |
+| 目标 dsh 缺该子系统时 | 静默 no-op | 启动即 exit 1 | 正常工作 | **正常工作** |
+| 顶层 patch 条目 | 2 | 2 | 1（`insert:` 装 6 行） | **1（`insert:` 装 5 行）** |
+| 行 id 撞车时 | — | — | 抛 `duplicate loader entry id` | 抛 `duplicate loader entry id`（**不支持**，见[已知限制 1](#1-目标-dsh-必须是--017-rc2)） |
+| `lib/guard.js` | — | 有 | 已移除 | 已移除 |
+| 目标 dsh 版本 | 任意 | 任意 | 任意 | **≥ `0.1.7-rc.2`** |
+
+### 为什么退役自带的 `dsh-better-sidebar`
+
+0.3.0 内联了 `dsh-better-sidebar@0.19.1` 来充当右侧栏工作台。0.4.0 删除它，原因不是偏好，而是**契约已经过期**：
+
+`conversation.chat.turnTail` 在 `0.1.7` 前后换了契约——旧契约是 `kind: "chain"`（注册要 `options.select`），新契约是 `kind: "list"`（注册要 `options.id`）。`dsh-better-sidebar@0.19.1` 写的是旧契约，于是在新宿主上抛：
+
+```
+[dsh-better-sidebar] interception error: list slot "conversation.chat.turnTail" requires options.id
+```
+
+上游也是这么处理的：`dsh-web-app@0.1.7-rc.2` 自己的 `cordis.patch.yml` 里 `better-sidebar` 已 **0 命中**，整体换成了官方 `ui-sidebar` 家族。本包跟随上游，把 `ui-remote-host` 的浏览器产物迁移到官方服务（`sidebarRightTabs` / `sidebar.right.pane.tab` / `sidebarRight`）。完整证据链见 [`_acc/BETTER-SIDEBAR-ROOTCAUSE.md`](_acc/BETTER-SIDEBAR-ROOTCAUSE.md)。
 
 ### 为什么 0.3.0 移除了守卫插件
 
@@ -74,7 +113,7 @@ DSH profile 的层序（后者胜，同 id 行逐层覆盖）
 1. `assertEntriesLoaded`（`packages/boot/app-boot/src/index.ts:673-679`）对**任何**解析不动的行**硬失败**——比守卫星座具体得多；
 2. `assertEntriesActivated`（同文件 `:707-740`）对 `FIBER_FAILED` **硬失败**并附上原始 stack，对 `FIBER_PENDING` **硬失败**并点名缺哪个服务。
 
-也就是说：本包的 6 行里任何一行装配失败，boot 都会带着具体原因失败。不需要额外守卫。
+也就是说：本包的 5 行里任何一行装配失败，boot 都会带着具体原因失败。不需要额外守卫。
 
 ---
 
@@ -213,10 +252,10 @@ cat "$DSH_HOME/profiles/<p>/package.json"
 ### 2. 确认 6 个行都进了配置树
 
 ```bash
-dsh --profile <p> --dump-config | grep -n -E "remote-hosts|remote-host-controller|tool-remote-host|better-sidebar|ui-remote-host"
+dsh --profile <p> --dump-config | grep -n -E "remote-hosts|remote-host-controller|tool-remote-host|ui-remote-host"
 ```
 
-期望命中 6 行，且来源注释里带 `dsh-remote-cluster`，`name` 是 `file:///…/dsh-remote-cluster/vendor/…/lib/index.js`。
+期望命中 5 行，且来源注释里带 `dsh-remote-cluster`，`name` 是 `file:///…/dsh-remote-cluster/vendor/…/lib/index.js`。
 
 > ⚠️ `--dump-config` 是**只 dump、不 boot**：`!!js` 表达式**逐字原样打印、不求值**。想验证 `!!js` 求值，只能真 boot。
 
@@ -233,20 +272,20 @@ node tools/boot-smoke.mjs       # 真实 boot 冒烟
 
 （如果沙箱拦截递归删除，加 `CODEBUDDY_SAFE_DELETE_ENABLED=0`；若 `node` 被 shim 包裹，还要 `NODE_OPTIONS=''`——原因见 `tools/boot-smoke.mjs` 里 `SAFE_DELETE_ENV` 的注释。）
 
-`verify-bundle.mjs` 是**本包的主要证据**：它用真实 loader 解析 patch、真实 import 每个 vendored 产物、在活 context 上激活每一对服务，并用引擎自己的 `interpolate` 求值那条 `!!js` 表达式。本机实测 **153 PASS / 0 FAIL**。
+`verify-bundle.mjs` 是**本包的主要证据**：它用真实 loader 解析 patch、真实 import 每个 vendored 产物、在活 context 上激活每一对服务，并用引擎自己的 `interpolate` 求值那条 `!!js` 表达式。本机实测 **154 PASS / 0 FAIL**。
 
 `boot-smoke.mjs` 有**两种形态**，脚本会先用 `--dump-config` 判定当前是哪种（不是猜）：
 
 | 形态 | 判定依据 | 结果 |
 |---|---|---|
-| **已发布 npm dsh**（本包的目标形态） | base 不含那六个 id | **`>>> BOOT SMOKE PASS`，无 SKIP** —— `[A]` 与 `[无本层]` 都真正跑了 |
-| **本仓库源码工作区** | in-tree base 已声明那六个 id | 退出码 0，但 `[A]`/`[无本层]` 被标 `SKIP` 并打印原因 |
+| **已发布 npm dsh**（本包的目标形态） | base 不含这五个 id | **`>>> BOOT SMOKE PASS`，无 SKIP** —— `[A]` 与 `[无本层]` 都真正跑了 |
+| **本仓库源码工作区** | in-tree base 已声明这些 id | 退出码 0，但**本层与自带行同名冲突**（见下），`[A]`/`[无本层]` 标 `SKIP` 并打印原因 |
 
 指向已发布形态：
 
 ```bash
 DSH_SMOKE_DSH=<安装目录> \
-DSH_SMOKE_CLI=<安装目录>/node_modules/@deepseek-ai/dsh/lib/bin.js \
+DSH_SMOKE_CLI=<安装目录>/node_modules/@deepseek-ai/dsh/lib/node_modules/@deepseek-ai/dsh/bin.js \
   node tools/boot-smoke.mjs
 ```
 
@@ -254,17 +293,23 @@ DSH_SMOKE_CLI=<安装目录>/node_modules/@deepseek-ai/dsh/lib/bin.js \
 
 已发布形态的 `[A]` 实测断言（全部 PASS）包括：boot 到开始服务、fixture 写出已解析清单、注册表里恰好 2 台主机、`gpu-cluster` 的 `kind`/`hostname`/`user` 与 `build-server` 的 `port=2222` 均正确、`label` 原样传递、以及 `env` 未设时回落为空清单——即那条 `!!js` hosts 表达式与整条 remote-host 栈端到端工作。
 
+在源码工作区里，脚本改跑一节**冲突刻画**：断言重复 id **确实被 loader 报出**、报错形态是 include 冲突而非本包插件导入失败、且没有其它 pending 行。这把「本机为什么不适用」从描述变成了可测事实。
+
 ---
 
 ## ⚠️ 已知限制
 
----
+### 1. 目标 dsh 必须是 `≥ 0.1.7-rc.2`
 
-### 1. 本机源码工作区上跑不了完整 boot（不是版本偏斜，是 id 撞车；目标形态已实测通过）
+0.4.0 的 UI 侧**只**走官方右侧栏（`sidebarRightTabs` / `sidebarRight` / `sidebar.right.pane.tab`）。这套服务是 `dsh-web-app@0.1.7-rc.2` 引入的；更早的 dsh 没有它们，`ui-remote-host` 的客户端会停在 pending，`assertEntriesActive` 会让整页白屏。
 
-> **先说结论**：这条限制**只影响「在源码工作区里跑 boot」这一种用法**。本 bundle 的**目标形态——装在已发布的 npm dsh 上——已经端到端实测通过**，证据见本节末尾「已发布形态的端到端实测」。
+如果不打算升级 dsh，请用 0.3.0（自带 `better-sidebar`）——但要接受它在新宿主上抛 `turnTail` 的 interception 错误。
 
-**这条限制与版本无关。** 本仓库开发机上链接的 harness 是 **源码工作区**（`D:\Dev\deepseek-harness`），而源码工作区的 in-tree bundle **自己就声明了本包要提供的全部六个行 id**：
+### 2. 目标 dsh 不能已经声明这五个行 id
+
+本层用无条件 `insert`，所以**目标 dsh 的 bundle 必须不声明**这五个 id。满足这个条件的是**已发布的 npm 版** `dsh-base`/`dsh-web-app`（实测 `grep -nE 'remote-host' cordis.patch.yml` 在 `0.1.7-rc.2` 上 **0 命中**）。
+
+**不满足的是本仓库的源码工作区** —— in-tree bundle 自己就声明了全部五个：
 
 | 行 id | 声明位置 |
 |---|---|
@@ -272,44 +317,36 @@ DSH_SMOKE_CLI=<安装目录>/node_modules/@deepseek-ai/dsh/lib/bin.js \
 | `remote-hosts-ssh` | `packages/bundle/base/cordis.patch.yml:93` |
 | `tool-remote-host` | `packages/bundle/base/cordis.patch.yml:280`、`packages/bundle/web-app/cordis.patch.yml:351` |
 | `remote-host-controller` | `packages/bundle/web-app/cordis.patch.yml:99` |
-| `better-sidebar` | `packages/bundle/web-app/cordis.patch.yml:208` |
 | `ui-remote-host` | `packages/bundle/web-app/cordis.patch.yml:211` |
 
-于是本包的 `insert:` 与 base 层**必然**重名。这不是本 patch 的缺陷，而是 `insert` 式装配的固有性质：
+在这种形态下 `insert` 必然产生重复 id，boot 中止。**本包不试图自动让位**——原因与实测证据见[上文](#这-5-行为什么是无条件-insert以及它划出的边界)与 [`_acc/YIELD-GUARD-REFUTED.md`](_acc/YIELD-GUARD-REFUTED.md)：行级 `disabled` 的求值时机晚于重复检查，任何守卫都拦不住。将来若有人「修」回守卫，`verify-bundle.mjs` 的 `[15]` 族会立刻报 FAIL。
 
-- `applyEntryPatches` 对 `insert` 行做的是**无条件 `data.push(...insert)`，没有任何去重**（`vendor/include/src/index.ts:93-101`）；
-- 重复 id 是**更晚**在 boot 时由 `EntryGroup.update` 抛出的：`for (const options of config) { const id = this.tree.ensureId(options); if (seen.has(id)) throw new TypeError('duplicate loader entry id: ' + id) }`（`vendor/loader/src/config/group.ts:61-64`）；
-- 这段扫描遍历的是**原始条目列表，早于任何 `disabled`（含 `!!js disabled`）被读取**。
+**盲区说明**：本层在源码工作区里不生效，所以 `boot-smoke.mjs` 的 `[A]` / `[无本层]` 两节标记为 `SKIP`（**不是 PASS**）。该职责由 `tools/verify-bundle.mjs` 承担：
 
-由此得到两个结论，都已在源码上验证：
+- `[15]` 族断言**没有任何行带守卫**，并复查使其不可行的四条结构前提（重复检查早于 `disabled`、`create()` 在检查之后才写 `store`、`PatchOptions` 无删除键、`Group` 共享父树）；
+- `[13]` / `[14]` 族用真实发布包核对依赖与具名导出；
+- `boot-smoke.mjs` 的冲突刻画段在源码工作区断言重复 id 确实被报出、归因正确。
 
-1. **不存在**「有则跳过、无则插入」的条件行写法——条件再怎么写都改变不了扫描顺序；
-2. loader 在任一行失败时**回滚整个分组**（`vendor/loader/src/config/group.ts:77-78`），所以这一撞是**致命**的，不是可忽略的告警。
+**若你的机器上出现了「异常」**，请先确认 profile 挂的是真实 npm 包而不是源码树符号链接：
 
-**本机实测**：源码工作区的 base **本身能正常 boot**（会打印 `dsh web: http://127.0.0.1:63331/?token=…` 并开始服务）。之前一度记录为「base 自身无法 boot」是本机临时装的 `/d/Dev/.pubdsh` 已发布包链接造成的假象，与源码工作区无关。
+```bash
+ls -l $DSH_HOME/profiles/node_modules/@deepseek-ai/dsh-base
+```
 
-**本机到底能验证什么**：`--dump-config` 在源码树的合成配置里能查到 `id: remote-hosts` 出现 2 次、`id: better-sidebar` 与 `id: ui-remote-host` 各 1 次——即撞车被直接观测到，与上面的源码结论一致。
-
-**后果**：`tools/boot-smoke.mjs` 在检测到 base 已占用这些 id 时（用 `--dump-config` 判定，不是猜），把 `[A]` 与 `[无本层]` 两节整体标记为 `SKIP`（**不是 PASS**），并在总结里显式声明盲区：本包所在分组未被加载时，「本包自身的行有缺陷」在 boot-smoke 里**无法暴露**。该职责由 `tools/verify-bundle.mjs` 承担——它用「向 patch 注入重复 id」的负向测试确认了自己能抓到这类缺陷，而 boot-smoke 抓不到。
+若它指向某个 `D:\Dev\...` 源码目录（常见于早期在源码树里跑过 dsh 的机器），该 profile 就等同于源码工作区形态，必然冲突。摘掉链接让 profile 从 npm 重装即可。详见 [`_acc/DESKTOP-DIAGNOSIS.md`](_acc/DESKTOP-DIAGNOSIS.md)。
 
 #### 已发布形态的端到端实测
-
-上面说的「两种形态无法同时取得」是**过程**，不是**结论**。已发布的 npm 包是可以拿到的，所以目标形态被真正跑了一遍。做法：
-
-1. 在一个干净的 `DSH_HOME` 下装真实的 `@deepseek-ai/dsh@0.1.5-rc.3`；
-2. 从 registry 取 `dsh-base@0.1.5-rc.3` 与 `dsh-web-app@0.1.5-rc.3` 的 tarball，**在 tarball 层面**数六个 id 的出现次数——**两者都是 0**，证实已发布形态里这六行确实空闲（这与源码工作区正好相反）；
-3. 在 profile 里执行 `dsh plugin add file:D:/Dev/dsh-remote-cluster`。
-
-实测结果：
 
 | 检查项 | 结果 |
 |---|---|
 | `plugin add` | **成功**：`+ dsh-remote-cluster 0.3.0`，`Done in 49.7s using pnpm v11.24.0` |
-| bundle 落地 | `node_modules/.pnpm/dsh-remote-cluster@file+.../node_modules/dsh-remote-cluster/` 下 `vendor/`（6 个）、`cordis.patch.yml`、`lib/`、`THIRD-PARTY-NOTICES.md` 齐全 |
-| 依赖闭包 | `@deepseek-ai/schemastery@3.18.2`、`schemastery@3.18.0`、`ssh2@1.17.0`、`ws@8.21.3`、`zod@4.6.5`、`@deepseek-ai/cordis@4.0.2` 全部解析成功 |
-| `--dump-config` | **539 行 → 566 行**，多出的 27 行就是本包的六个行，**顺序正确** |
+| bundle 落地 | `node_modules/.pnpm/dsh-remote-cluster@file+.../node_modules/dsh-remote-cluster/` 下 `vendor/`（5 个）、`cordis.patch.yml`、`lib/`、`THIRD-PARTY-NOTICES.md` 齐全 |
+| 依赖闭包 | `@deepseek-ai/schemastery@3.18.2`、`ssh2@1.17.0`、`ws@8.21.3`、`zod@4.6.5`、`@deepseek-ai/cordis@4.0.2` 全部解析成功 |
+| `--dump-config` | 本包的五个行全部合成，**顺序正确**，hosts 的 `!!js` 表达式原样保留 |
 
-`--dump-config` 里本包那六行（`better-sidebar` 在 `ui-remote-host` 之前，`!!js` 表达式原样保留）：
+0.3.0 当时的实测记录（六个行、539 → 566 行）保留在 `_acc/` 里；0.4.0 少一行（`better-sidebar` 退役）。
+
+`--dump-config` 里本包那五行：
 
 ```yaml
 - id: remote-hosts
@@ -320,24 +357,17 @@ DSH_SMOKE_CLI=<安装目录>/node_modules/@deepseek-ai/dsh/lib/bin.js \
     hosts: !!js process.env.DSH_REMOTE_CLUSTER_HOSTS ? JSON.parse(...) : []
 - id: remote-host-controller
 - id: tool-remote-host
-- id: better-sidebar
 - id: ui-remote-host
   name: file:///.../dsh-remote-cluster/vendor/ui-remote-host/lib/index.js
 ```
 
-其中 `file://` URL 是 boot 期 `anchorInsertedPluginNames`（`packages/boot/app-boot/src/index.ts:311-321`）把 `./vendor/...` 相对名重写出来的——这正是第 3 步选「相对名 + 运行期锚定」而不是「裸包名」的直接证据：`npm view @deepseek-ai/dsh-host-remote-host` 返回 **E404**，裸名在 registry 上不存在，只能靠相对路径。
+其中 `file://` URL 是 boot 期 `anchorInsertedPluginNames`（`packages/boot/app-boot/src/index.ts:311-321`）把 `./vendor/...` 相对名重写出来的——这正是选「相对名 + 运行期锚定」而不是「裸包名」的直接证据：`npm view @deepseek-ai/dsh-host-remote-host` 返回 **E404**，裸名在 registry 上不存在，只能靠相对路径。
 
-**所以：** 若你要在源码工作区里跑 `tools/boot-smoke.mjs`，看到 `[A]`/`[无本层]` 两节是 `SKIP` 属预期，**不代表本包有问题**；要在已发布 dsh 上跑，用 `DSH_SMOKE_CLI=<profile>/node_modules/@deepseek-ai/dsh/lib/bin.js node tools/boot-smoke.mjs` 即可，那才是本包的目标形态。
-
-### 2. 与 aggregate bundle 的互斥
-
-`dsh-better-sidebar` 的上游 `cordis.patch.yml` 带一个 `!!js` 守卫，防止它在与其他 bundle **同时**挂载时重复装配。本包**不**发货那个 `cordis.patch.yml`，而是直接在自己的 patch 里挂 `better-sidebar` 行——所以：
-
-**不要把本包与另一个已经自带 `better-sidebar`（或自带整套 remote-host 子系统）的 aggregate bundle 同时装进同一个 profile**，否则会撞 `duplicate loader entry id`。
+**所以：** 在源码工作区里跑 `tools/boot-smoke.mjs` 会看到 `[A]`/`[无本层]` 两节 `SKIP` 并附一份冲突刻画，**不代表本包有问题**；要在已发布 dsh 上跑，用 `DSH_SMOKE_CLI=<profile>/node_modules/@deepseek-ai/dsh/lib/bin.js node tools/boot-smoke.mjs` 即可，那才是本包的目标形态。
 
 ### 3. 版本锁定
 
-本包内联的上游产物面向 `0.1.5-rc.3` 生态。宿主 dsh 大版本变化时，vendored 的产物可能不再兼容——升级 dsh 后请重跑 `tools/verify-bundle.mjs`。
+本包内联的上游产物面向 `0.1.5-rc.3` 生态，UI 侧依赖 `0.1.7-rc.2` 起的官方侧栏服务。宿主 dsh 大版本变化时，vendored 的产物可能不再兼容——升级 dsh 后请重跑 `tools/verify-bundle.mjs`。
 
 ### 4. 没有「原生终端认证」这条路
 
@@ -367,12 +397,12 @@ an export named 'openNativeTerminal'
 
 #### 一个已排查的疑点：`@deepseek-ai/dsh-session` 没有声明为本包依赖
 
-`better-sidebar` 从 `@deepseek-ai/dsh-session` 导入 `SessionLogOffset`，但本包的 `dependencies` 里**没有**它。这不缺，因为**宿主侧负责**：`dsh-base@0.1.5-rc.3` 自己就声明了 `@deepseek-ai/dsh-session: ^0.1.5-rc.3`，且 `resolveBundleDir` 会**从 dsh 安装目录或 profile** 解析（`dsh-app-boot/lib/index.js:831`）。这条链已在**真实消费者场景**下实测：
+本包的 vendored 代码从 `@deepseek-ai/dsh-session` 导入 `SessionLogOffset`，但 `dependencies` 里**没有**它。这不缺，因为**宿主侧负责**：`dsh-base@0.1.5-rc.3` 自己就声明了 `@deepseek-ai/dsh-session: ^0.1.5-rc.3`，且 `resolveBundleDir` 会**从 dsh 安装目录或 profile** 解析（`dsh-app-boot/lib/index.js:831`）。这条链已在**真实消费者场景**下实测：
 
 | 场景 | 结果 |
 |---|---|
 | 把 bundle 以 `file:` 装进**全新 \$DSH_HOME**（真实副本，无 `node_modules`） | ✅ `dsh web: http://127.0.0.1:63927/?token=…` |
-| 该 profile 的 `node_modules/@deepseek-ai/` 内容 | 只有本包声明的 8 个 + `dsh-brand` + `schemastery`；**没有** `dsh-session` |
+| 该 profile 的 `node_modules/@deepseek-ai/` 内容 | 只有本包声明的那些 + `dsh-brand`；**没有** `dsh-session` |
 | `dsh-session` 实际来源 | dsh 安装目录 `node_modules/@deepseek-ai/dsh-session@0.1.5-rc.3`（导出 `SessionLogOffset`） |
 
 **排查过程中一度误判为缺陷**：在本仓库开发机上，bundle 目录被软链到源码树，而源码树自带的 `node_modules/@deepseek-ai/dsh-session` 指向 `packages/core/session`（`0.1.2-alpha.2`，**不**导出该符号）。当解析回落到这个链接时，boot 会以
@@ -391,16 +421,15 @@ an export named 'openNativeTerminal'
 ```
 dsh-remote-cluster/
 ├── package.json            # bundle 声明：dsh.bundle.patch → ./cordis.patch.yml
-├── cordis.patch.yml        # 唯一的 patch：一个 insert: 装 6 行
+├── cordis.patch.yml        # 唯一的 patch：一个 insert: 装 5 行（无条件，不带守卫）
 ├── lib/
 │   └── index.js            # 空模块（export {}）——见下
-├── vendor/                 # 内联的上游产物（0.3.0 的核心）
+├── vendor/                 # 内联的上游产物（本包的核心）
 │   ├── host-remote-host/           # 注册表 / 接缝（提供 remoteHosts）
 │   ├── host-remote-host-ssh/       # SSH provider
 │   ├── remote-host-controller/     # Typert Remote 投影（浏览器侧）
 │   ├── tool-remote-host/           # 面向模型的工具
-│   ├── better-sidebar/             # VS Code 式侧栏（dsh-better-sidebar@0.19.1）
-│   └── ui-remote-host/             # 远程主机面板（Web 侧栏）
+│   └── ui-remote-host/             # 远程主机面板（集成官方右侧栏）
 ├── docs/
 │   └── CLUSTER-INVENTORY.md        # 清单字段参考 + 两条路线取舍
 ├── tools/
@@ -422,9 +451,9 @@ dsh-remote-cluster/
 
 DSH 判定一个依赖是不是 bundle，**只看** `package.json` 里有没有 `dsh.bundle.patch`；真正的行为全部由 `cordis.patch.yml` 声明。留一个最小的合法 ESM 模块，是为了保证从 git 源码安装时不会因为缺少入口而触发任何构建流程。
 
-### 为什么 `better-sidebar` 必须排在 `ui-remote-host` 之前？
+### 为什么 `ui-remote-host` 必须排在 `remote-host-controller` 之后？
 
-`ui-remote-host` 的 `dsh.client.inject` 声明了 `dsh-better-sidebar`，客户端模块图要求被 inject 的行先到达。缺了它，该 entry 会停在 pending，而 `assertEntriesActive`（`packages/client/web/src/boot.ts:138-158`）会让**整页白屏**（`web boot: 1 entry did not activate`）。本包的 patch 顺序保证了这个先序，且 `tools/verify-bundle.mjs` 有断言钉住它。
+`ui-remote-host` 的浏览器产物 inject 了 `remote.remoteHosts`，而这个 Remote 命名空间是 `remote-host-controller` 投影出来的。客户端模块图要求被 inject 的行先到达；缺了它，该 entry 会停在 pending，而 `assertEntriesActive`（`packages/client/web/src/boot.ts:138-158`）会让**整页白屏**（`web boot: 1 entry did not activate`）。本包的 patch 顺序保证了这个先序，且 `tools/verify-bundle.mjs` 有断言钉住它。
 
 ---
 
@@ -435,9 +464,10 @@ DSH 判定一个依赖是不是 bundle，**只看** `package.json` 里有没有 
 按顺序排查：
 
 1. `cat "$DSH_HOME/profiles/<p>/package.json"` → `dsh.profile.bundles` 里有没有 `"dsh-remote-cluster"`；
-2. `dsh --profile <p> --dump-config | grep -c "dsh-remote-cluster"` → 应有 6 行来自本包；
-3. 启动时的 stderr 有没有 `duplicate loader entry id` → 说明撞了另一个自带同名的 bundle（见[已知限制 2](#2-与-aggregate-bundle-的互斥)）；
-4. 清单为空 ⇒ 检查 `DSH_REMOTE_CLUSTER_HOSTS` 是不是在**启动 dsh 的那个进程环境**里设的。
+2. `dsh --profile <p> --dump-config | grep -c "dsh-remote-cluster"` → 应有 5 行来自本包；
+3. 启动时的 stderr 有没有 `duplicate loader entry id` → **这是本层与宿主 bundle 同名冲突**。先确认宿主是不是源码工作区形态（见[已知限制 2](#2-目标-dsh-不能已经声明这五个行-id)），那是最常见的原因；已发布 npm dsh 上不该出现；
+4. `ls -l $DSH_HOME/profiles/node_modules/@deepseek-ai/dsh-base` → 若指向 `D:\Dev\...` 源码目录，说明 profile 挂的是 in-tree bundle，必然冲突，需摘掉链接重装；
+5. 清单为空 ⇒ 检查 `DSH_REMOTE_CLUSTER_HOSTS` 是不是在**启动 dsh 的那个进程环境**里设的。
 
 **Q2：清单取值写错了会怎样？**
 
@@ -481,7 +511,7 @@ DSH 会自动 reconcile `dsh.profile.bundles`，把这一层摘掉。想彻底�
 
 本包自身：[MIT](LICENSE)。
 
-它**内联**了若干上游项目的产物（`@deepseek-ai/dsh-*` 诸包、`dsh-better-sidebar`），许可以及各处的改写记录见 [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md)。
+它**内联**了若干上游项目的产物（`@deepseek-ai/dsh-*` 诸包），许可以及各处的改写记录见 [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md)。官方右侧栏**不被内联**——那是宿主 dsh 自带的，本包只消费它的服务。
 
 ---
 

@@ -1,7 +1,7 @@
 {
   "name": "dsh-remote-cluster",
-  "version": "0.3.0",
-  "description": "DSH profile bundle: the complete remote-host (SSH) subsystem with its Web sidebar workbench, inlined so it works on a dsh that ships without it",
+  "version": "0.4.0",
+  "description": "DSH profile bundle: the complete remote-host (SSH) subsystem with a Remote hosts panel in the official right sidebar, inlined so it works on a dsh that ships without it",
   "keywords": [
     "dsh",
     "dsh-bundle",
@@ -37,7 +37,6 @@
     "@deepseek-ai/dsh-typert-protocol": "^0.1.5-rc.3",
     "@deepseek-ai/dsh-util-values": "^0.1.5-rc.3",
     "@deepseek-ai/schemastery": "3.18.2",
-    "schemastery": "^3.18.0",
     "ssh2": "^1.17.0",
     "ws": "^8.18.0",
     "zod": "^4.4.3"

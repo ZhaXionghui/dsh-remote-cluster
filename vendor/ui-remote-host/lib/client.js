@@ -738,6 +738,7 @@ window.__ModuleLoader__.load({
 		const zh = {
 			title: "远程主机",
 			subtitle: "查看服务器和集群登录节点的连接状态与基础信息。",
+			guideDescription: "查看服务器和集群登录节点的连接状态与基础信息",
 			loading: "正在读取远程主机…",
 			error: "暂时无法读取远程主机。",
 			retry: "重试",
@@ -804,6 +805,7 @@ window.__ModuleLoader__.load({
 		const en = {
 			title: "Remote hosts",
 			subtitle: "Inspect connection state and basic facts for servers and cluster login nodes.",
+			guideDescription: "Inspect connection state and basic facts for servers and cluster login nodes",
 			loading: "Reading remote hosts…",
 			error: "Remote hosts are temporarily unavailable.",
 			retry: "Retry",
@@ -868,19 +870,52 @@ window.__ModuleLoader__.load({
 		};
 		//#endregion
 		//#region lib/types/client/index.js
-		/** Localized Remote hosts inventory and authentication surface registered in the right workbench. */
+		/** Localized Remote hosts inventory and authentication surface registered in the official right sidebar. */
 		/** Dictionary namespace owned by this plugin. */
 		const NS = "remoteHosts";
-		/** Services required by the right-workbench contribution and generated Remote face. */
+		/** The tab type this plugin owns: its registry id, its page kind, and its command id. */
+		const REMOTE_HOSTS_ID = "@deepseek-ai/dsh-client-ui-remote-host";
+		const REMOTE_HOSTS_KIND = "remote-hosts";
+		const REMOTE_HOSTS_COMMAND = "sidebar.remote-hosts";
+		/** Services required by the right-sidebar contribution and generated Remote face. */
 		const inject = [
+			"slots",
 			"locale",
-			"betterSidebar",
+			"sidebarRightTabs",
+			"sidebarRight",
 			"remote",
 			"remote.remoteHosts"
 		];
 		/**
+		* The Remote hosts tab type's registry definition.
+		*
+		* `id` is unique across the whole `sidebarRightTabs` registry and follows the
+		* reverse-DNS package-name style the official plugins use; `kind` is the page
+		* kind `sidebarRight.openTab` takes and must not collide with an existing kind
+		* unless the bands differ and neither is `fallback`. `files` is already taken
+		* at `builtin` by ui-sidebar-files, so this kind is registered `builtin` too
+		* and simply claims its own unclaimed kind name.
+		* @param t - namespace-bound translate, read fresh on every label call.
+		* @returns the definition to register.
+		*/
+		function remoteHostsDefinition(t) {
+			return {
+				id: REMOTE_HOSTS_ID,
+				kind: REMOTE_HOSTS_KIND,
+				priority: "builtin",
+				title: () => t("title"),
+				guide: [{
+					id: "remote-hosts",
+					commandId: REMOTE_HOSTS_COMMAND,
+					order: 20,
+					title: () => t("title"),
+					description: () => t("guideDescription")
+				}]
+			};
+		}
+		/**
 		* Contribute the Remote hosts surface without owning any Host connection resource.
-		* @param ctx - browser Cordis root carrying the right-workbench service and generated Remote namespaces.
+		* @param ctx - browser Cordis root carrying the official right-sidebar services and generated Remote namespaces.
 		*/
 		function apply(ctx) {
 			ctx.effect(() => ctx.locale.register(NS, {
@@ -930,6 +965,14 @@ window.__ModuleLoader__.load({
 				if (!result.ok) throw result.error;
 			};
 			const t = ctx.locale.bind(NS);
+			/**
+			* The tab body. The official keyed seat hands the body `useTabInfo` and the
+			* standard framework readers; this plugin needs none of them beyond the
+			* bound translate it already closed over, so the props are deliberately
+			* ignored and the panel keeps its own injected Remote calls.
+			* @param _props - the seat's composed props, unused.
+			* @returns the Remote hosts panel element.
+			*/
 			function RemoteHostsTab(_props) {
 				return (0, react.createElement)(RemoteHostsPanel, {
 					list,
@@ -944,24 +987,66 @@ window.__ModuleLoader__.load({
 					t
 				});
 			}
-			ctx.effect(() => ctx.betterSidebar.registerTab({
-				id: "remote-hosts",
-				title: () => t("title"),
-				order: 10,
-				single: true,
-				component: RemoteHostsTab
-			}), "ui-remote-host: right-workbench Tab");
-			ctx.effect(() => {
-				let initializedSessionId;
-				const openDefaultTab = () => {
-					const { sessionId } = ctx.betterSidebar.getSnapshot();
-					if (sessionId === void 0 || sessionId === initializedSessionId) return;
-					initializedSessionId = sessionId;
-					ctx.betterSidebar.openTab({ type: "remote-hosts" }, { sessionId });
-				};
-				openDefaultTab();
-				return ctx.betterSidebar.subscribeState(openDefaultTab);
-			}, "ui-remote-host: default right-workbench Tab");
+			/**
+			* The tab's chip title. The seat renders this in place of the plain record
+			* title, so it re-reads the dictionary through the bound translate.
+			* @param _props - the seat's composed props, unused.
+			* @returns the localized tab title element.
+			*/
+			function RemoteHostsTitle(_props) {
+				return (0, react_jsx_runtime.jsx)("span", { children: t("title") });
+			}
+			// Register the page type first: `sidebarRight.openTab` resolves the kind
+			// through this registry and throws when it is absent, so the body seats
+			// below are useless until the type exists.
+			ctx.effect(() => ctx.sidebarRightTabs.register(remoteHostsDefinition(t)), "ui-remote-host: tab type");
+			ctx.effect(() => ctx.slots.inject("sidebar.right.pane.tab", () => ctx.slots.register({
+				name: "sidebar.right.pane.tab",
+				key: REMOTE_HOSTS_ID
+			}, RemoteHostsTab)), "ui-remote-host: tab body");
+			ctx.effect(() => ctx.slots.inject("sidebar.right.pane.tab.title", () => ctx.slots.register({
+				name: "sidebar.right.pane.tab.title",
+				key: REMOTE_HOSTS_ID
+			}, RemoteHostsTitle)), "ui-remote-host: tab title");
+			// A shortcut, not an auto-open: the official sidebar has no "default tab"
+			// hook to subscribe to, and silently stealing the column on every session
+			// switch would fight the official occupants. The guide entry declared in
+			// `remoteHostsDefinition` surfaces this same command id, so the panel is
+			// reachable from the sidebar's own "Start" page as well as from here.
+			// `shortcuts` is injected through `ctx.inject` the way the official
+			// ui-sidebar-files does it, so the panel still loads on a host whose
+			// sidebar predates the shortcuts service.
+			ctx.inject(["shortcuts"], (ctx) => {
+				ctx.effect(() => ctx.shortcuts.register({
+					id: REMOTE_HOSTS_COMMAND,
+					label: () => t("title"),
+					aliases: [
+						"remote hosts",
+						"ssh hosts",
+						"集群主机"
+					],
+					defaults: {},
+					regions: [
+						"page",
+						"editable",
+						"terminal"
+					],
+					modals: [],
+					resolve: ({ target: element }) => {
+						const target = ctx.sidebarRight.commandTarget(element);
+						if (target === void 0) return {
+							status: "blocked",
+							reason: t("title")
+						};
+						return {
+							status: "handled",
+							run: () => {
+								ctx.sidebarRight.openTabFromTarget(REMOTE_HOSTS_KIND, target);
+							}
+						};
+					}
+				}), "ui-remote-host: command");
+			});
 		}
 		//#endregion
 		exports.NS = NS;

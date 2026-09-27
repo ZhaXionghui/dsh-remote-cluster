@@ -1,17 +1,23 @@
 /**
- * Real-boot smoke test for the `dsh-remote-cluster` 0.3.0 bundle.
+ * Real-boot smoke test for the `dsh-remote-cluster` 0.4.0 bundle.
  *
  * 0.2.0 shipped nothing but a "loud-fail guard": it assumed the remote-host
  * subsystem was already present in the dsh you installed into, and merely
  * asserted that fact. 0.3.0 inverts that — the bundle *provides* the whole
- * subsystem (5 inlined `@deepseek-ai/dsh-*` packages plus `dsh-better-sidebar`
- * and the Web sidebar panel), so it works on a dsh that ships without it. The
- * guard and its row are gone.
+ * subsystem (5 inlined `@deepseek-ai/dsh-*` packages), so it works on a dsh
+ * that ships without it. The guard and its row are gone.
+ *
+ * 0.4.0 retires the vendored `dsh-better-sidebar` and moves the panel onto the
+ * OFFICIAL right sidebar (`@deepseek-ai/dsh-client-ui-sidebar-right`, reached
+ * through its `sidebarRightTabs` / `sidebarRight` services) — the same move
+ * upstream `dsh-web-app@0.1.7-rc.2` made. The row count is therefore five.
+ * It also removes the yield guards an earlier draft carried: they were proven
+ * ineffective by this very file, on a real boot (see "Two harness shapes").
  *
  * This test therefore asserts two things a unit-level check cannot:
  *
  *   [A] On a profile that mounts nothing but a stock `dsh-base + dsh-web-app`
- *       and a COPY of this bundle, the six vendored rows load for real: the
+ *       and a COPY of this bundle, the five vendored rows load for real: the
  *       CLI would boot to exit 0, the `remoteHosts` registry would answer with
  *       the inventory parsed from `DSH_REMOTE_CLUSTER_HOSTS`, and with the env
  *       var unset it would fall back to the `hosts: []` default. Both
@@ -21,14 +27,14 @@
  *   [B] The counterfactual. The same profile minus the `dsh-remote-cluster`
  *       bundle must fail loudly — which [B] asserts, along with the
  *       load-bearing converse: the failure must NOT name `dsh-remote-cluster`
- *       or any of the six rows. That negative half is what makes "[B] passed"
+ *       or any of the five rows. That negative half is what makes "[B] passed"
  *       evidence that the bundle really was still mounted in [A], rather than
  *       both runs failing for the same environmental reason.
  *
  *       NOTE — [B] is only meaningful on shape 1 (see "Two harness shapes"
- *       below). On shape 2 the base already supplies all six rows, so removing
- *       this layer removes nothing; the "it must fail" half is simply false
- *       there, and [B] is skipped for the same reason as [A].
+ *       below). On shape 2 the base already supplies rows under the same ids,
+ *       so removing this layer removes nothing; the "it must fail" half is
+ *       simply false there, and [B] is skipped for the same reason as [A].
  *
  * Both sections are gated on the shape probe described below, so on this
  * workspace they report SKIP — not PASS, and not FAIL.
@@ -54,33 +60,41 @@
  * (Set CODEBUDDY_SAFE_DELETE_ENABLED=0 if the sandbox blocks recursive rmdir.)
  *
  * ── Two harness shapes, and why this file can only exercise one ────────────
- * This bundle mounts its six rows with `insert:`, appended unconditionally by
+ * This bundle mounts its five rows with `insert:`, appended unconditionally by
  * `applyEntryPatches` (`vendor/include/src/index.ts:93-101`: `data.push(...insert)`
- * with no dedup) and checked for collisions only later, at boot, by
- * `EntryGroup.update` (`vendor/loader/src/config/group.ts:61-64`), which throws
- * `duplicate loader entry id` and aborts the whole tree. A conditional insert is
- * impossible: the duplicate scan runs over the raw entry list BEFORE any
- * `disabled` (or `!!js disabled`) is consulted, so a "insert only if absent"
- * row cannot be expressed at all.
+ * with no dedup, into the SAME top-level array the host bundle wrote) and
+ * checked for collisions only later, at boot, by `EntryGroup.update`
+ * (`vendor/loader/src/config/group.ts:59-66`), which throws
+ * `duplicate loader entry id` and aborts the whole tree.
  *
- * That makes the harness's own base inventory decisive, and there are two
+ * 0.4.0 does NOT work around that. An earlier draft tried, with a per-row
+ * `disabled: !!js '... loader.store["<id>"] ...'` guard intended to make a
+ * colliding row yield. It was wrong, and this file is what proved it: a real
+ * boot still died on `duplicate loader entry id: remote-hosts` while every
+ * static assertion about the guards passed. The reason is timing —
+ * `loader.store` is written by `EntryGroup.create` (`group.ts:22-23`), which
+ * `update` calls only AFTER its duplicate scan, so at the throw the map is
+ * empty (`storeKeys=[]`, measured by instrumenting the loader) and the guard
+ * evaluates to "not disabled" every time. There is also no escape hatch:
+ * `PatchOptions` has no delete/rename key (`include/src/index.ts:145-160`), and
+ * nesting inside a `group` shares one id namespace because `Group` passes the
+ * parent tree (`group.ts:119`).
+ *
+ * So the guards were removed and the constraint is declared instead: this
+ * bundle requires a target dsh whose bundles do not already declare these five
+ * ids. That makes the harness's own base inventory decisive, and there are two
  * shapes:
  *
  *   1. PUBLISHED / npm dsh (the target) — `dsh-base` and `dsh-web-app` carry
  *      ZERO remote-host rows. Our `insert:` is what supplies them, and it works.
- *      This is the shape 0.3.0 is built for.
- *   2. IN-TREE / source harness (this workspace) — every one of the six ids is
- *      ALREADY declared by the source bundles: `remote-hosts` and
- *      `remote-hosts-ssh` by `packages/bundle/base/cordis.patch.yml:90,93`;
- *      `remote-host-controller`, `tool-remote-host`, `better-sidebar` and
- *      `ui-remote-host` by `packages/bundle/web-app/cordis.patch.yml:99,208,211,351`.
- *      Our `insert:` of those same ids is therefore a hard collision:
- *
- *        dsh: plugin tree failed to load: failed to apply loader entry include
- *        (cordis:include): duplicate loader entry id: remote-hosts
- *
- *      This is inherent to `insert:`-based bundling, not a patch bug — the same
- *      patch is correct on shape 1 and impossible on shape 2.
+ *      This is the shape 0.4.0 is built for.
+ *   2. IN-TREE / source harness (this workspace) — the ids are ALREADY declared
+ *      by the source bundles: `remote-hosts` and `remote-hosts-ssh` by
+ *      `packages/bundle/base/cordis.patch.yml:90,93`; `remote-host-controller`,
+ *      `tool-remote-host` and `ui-remote-host` by
+ *      `packages/bundle/web-app/cordis.patch.yml`. On this shape our `insert:`
+ *      collides by construction and the boot aborts — the same `ASSEMBLY`
+ *      conflict 0.3.0 hit, now documented rather than guarded against.
  *
  * The precondition probe below DISCOVERS which shape is present — by reading the
  * base's own composed tree via `--dump-config`, with this package absent from
@@ -89,43 +103,52 @@
  *
  * In this workspace the shape is (2), so `[A]` is skipped wholesale and says so
  * by name. Note that the source-tree base itself BOOTS FINE here (it serves and
- * prints its URL); the blocker is the id collision, nothing else.
+ * prints its URL); the blocker is the id collision between our `insert:` and
+ * rows the in-tree bundles already declare, which is a property of mounting
+ * this bundle inside the harness's own source tree — not of the patch, and not
+ * of any dsh installed from npm.
  *
  * ── The blind spot the skip opens, and what covers it ───────────────────────
  * This is worth stating plainly, because it was measured rather than assumed.
- * When this bundle's group is never loaded, a defect *inside that group* cannot
- * surface in this process at all. Verified by injecting a duplicate
- * `remote-hosts` id into `cordis.patch.yml` and re-running: this file still
- * printed `>>> BOOT SMOKE PASS`.
+ * When this bundle's group is never loaded — which on shape 2 is now the
+ * expected outcome, since the insert collides and aborts — a defect *inside
+ * that group* cannot surface in this process at all. Verified by injecting a
+ * duplicate `remote-hosts` id into `cordis.patch.yml` and re-running: this file
+ * still printed `>>> BOOT SMOKE PASS`.
+ *
+ * The section it does run on shape 2, {@link runSectionYield}, asserts the
+ * collision is present and correctly attributed. That is a different claim from
+ * "our rows work": it pins the boundary instead of pretending to cross it.
  *
  * So `boot-smoke.mjs` is NOT sufficient evidence on this machine, and the
  * division of labour is deliberate:
  *
  *   - `verify-bundle.mjs` parses the patch through the real loader and HARD
  *     FAILS the same injected duplicate (`[1] cordis.patch.yml 由 DSH 真实
- *     loader 解析成功`). It is the primary evidence for 0.3.0: it imports every
- *     vendored artifact for real, activates each pair against a live context,
- *     and evaluates the shipped `!!js` expression through the engine's own
- *     `interpolate`;
+ *     loader 解析成功`). It is the primary evidence: it imports every vendored
+ *     artifact for real, activates each pair against a live context, and
+ *     evaluates the shipped `!!js` expression through the engine's own
+ *     `interpolate`. Its `[15]` family pins why no row can yield, against the
+ *     harness sources;
  *   - this file is boot-shaped corroboration — the counterfactual, the absence
  *     of an unsatisfied-patch warning, and the `0 pending rows` attestation.
  *
  * ── Why the skew machinery still exists ───────────────────────────────────
- * On shape 2 none of this is reachable: the group never loads, so no row of
- * ours ever gets the chance to fail on an export mismatch. The
- * `web-runtime` / `SessionLogOffset` skew belongs to the *published* package
- * set (see THIRD-PARTY-NOTICES.md) and would only surface on a machine that
- * installed one — which is exactly the machine that can also run [A] for real.
- * So the skew handling is kept for that machine, not for this one.
+ * On shape 2 the group aborts before any row loads, so no row of ours ever gets
+ * the chance to fail on an export mismatch. The `web-runtime` /
+ * `SessionLogOffset` skew belongs to the *published* package set (see
+ * THIRD-PARTY-NOTICES.md) and would only surface on a machine that installed
+ * one — which is exactly the machine that can also run [A] for real. So the
+ * skew handling is kept for that machine, not for this one.
  *
  * `assertRun` never forgives `web-runtime`: it belongs to a layer this package
  * does not own, so {@link upstreamFailureRow} names it rather than absorbing
  * it, keeping a real defect in our own rows visibly different.
  *
  * `DSH_SMOKE_ATTEST=1` narrows the expected-failure set to this bundle's own
- * `better-sidebar` row under the version-skew signature, and still requires
- * zero pending rows. It never forgives `ui-remote-host`, so the
- * better-sidebar → ui-remote-host ordering guarantee stays enforced.
+ * rows under the version-skew signature, and still requires zero pending rows.
+ * As of 0.4.0 that set is empty (the skew's only member, `better-sidebar`, is
+ * retired), so the flag is now inert by construction rather than by choice.
  *
  * A full green boot of a real published dsh is NOT proven here and cannot be on
  * this machine: the npm registry is unreachable (verified) so `0.1.5-rc.3`
@@ -144,7 +167,7 @@ const BUNDLE_DIR = resolve(HERE, '..')
 /**
  * Harness under test. Defaults to the source workspace, but overridable so the
  * suite can finally be pointed at a PUBLISHED dsh — the shape this bundle is
- * actually written for, where the six row ids are free and `[A]` can go green.
+ * actually written for, where the five row ids are free and `[A]` can go green.
  *
  *   DSH_SMOKE_CLI=D:/path/to/profile/node_modules/@deepseek-ai/dsh/lib/bin.js \
  *     node tools/boot-smoke.mjs
@@ -157,10 +180,10 @@ const BIN = process.env.DSH_SMOKE_CLI ?? join(DSH, 'apps/cli/lib/bin.js')
 const PROFILE = 'clustersmoke'
 /**
  * Attestation mode — see the file header. Narrows the expected-failure set to
- * this bundle's own `better-sidebar` row under the version-skew signature, and
- * requires the child to additionally report zero pending rows, so it can never
- * hide a regression in the six rows this bundle contributes. It does not turn
- * [A] green (the loader rolls back the whole group on any row failure); it makes
+ * this bundle's own rows under the version-skew signature, and requires the
+ * child to additionally report zero pending rows, so it can never hide a
+ * regression in the five rows this bundle contributes. It does not turn [A]
+ * green (the loader rolls back the whole group on any row failure); it makes
  * the failure attributable. Assertions are otherwise identical.
  */
 const ATTEST = process.env.DSH_SMOKE_ATTEST === '1'
@@ -169,31 +192,37 @@ const ATTEST = process.env.DSH_SMOKE_ATTEST === '1'
  * must match before a failure is forgiven: a row id alone would let a *pending*
  * or *missing-package* failure through.
  *
- * Only `better-sidebar` is listed even though `web-runtime` shares the
- * signature. `web-runtime` is inserted by the upstream `dsh-web-app` bundle and
- * is not this package's row; forgiving it would mean tolerating a failure in a
- * layer we do not own, which is precisely the kind of over-reach the flag must
+ * 0.4.0 retired the only entry this list ever had. The `better-sidebar` row is
+ * gone, so on a real published install there is now nothing to forgive and the
+ * list is empty by construction — which is the point: the skew existed because
+ * that package was pinned to an older client contract, and it no longer is.
+ *
+ * `web-runtime` is deliberately NOT added to fill the gap, even though it shares
+ * the signature. `web-runtime` is inserted by the upstream `dsh-web-app` bundle
+ * and is not this package's row; forgiving it would mean tolerating a failure in
+ * a layer we do not own, which is precisely the kind of over-reach the flag must
  * not permit. It stays a hard failure — see {@link upstreamFailureRow}, which
  * reports it as an environment limitation rather than a defect here.
  */
-const SKEWED_ROW_IDS = ['better-sidebar']
+const SKEWED_ROW_IDS = []
 const SKEW_SIGNATURE = /does not provide an export named/u
 // Bundle names are the real `name` fields of their package.json:
 // packages/bundle/base/package.json:2 and packages/bundle/web-app/package.json:2.
 const BUNDLES = ['@deepseek-ai/dsh-base', '@deepseek-ai/dsh-web-app', 'dsh-remote-cluster']
-// `vendor` is the whole point of 0.3.0: the six rows resolve to `./vendor/...`
+// `vendor` is the whole point of 0.3.0: the rows resolve to `./vendor/...`
 // paths relative to the patch file, so the directory must be copied alongside
 // it or every row is unresolvable.
 //
 // `node_modules` is copied for a subtler reason. The vendored code imports
-// `schemastery` / `ws` / `ssh2` (declared `dependencies`), and Node resolves
-// bare specifiers by walking UP from the importing file — a path that leads out
-// of the throwaway home and into whatever happens to sit above the temp dir.
-// It cannot reach the *installed* copies, because a real install materializes
-// them elsewhere. What makes them reachable in a real install is the harness
-// itself: `healProfileModuleFallback` builds each bundle's dependency closure
-// from its manifest and links the result into `<profile>/node_modules`, from
-// which the walk DOES succeed. `dependencyClosure` resolves those roots with
+// `@deepseek-ai/schemastery` / `ws` / `ssh2` / `zod` (declared `dependencies`),
+// and Node resolves bare specifiers by walking UP from the importing file — a
+// path that leads out of the throwaway home and into whatever happens to sit
+// above the temp dir. It cannot reach the *installed* copies, because a real
+// install materializes them elsewhere. What makes them reachable in a real
+// install is the harness itself: `healProfileModuleFallback` builds each
+// bundle's dependency closure from its manifest and links the result into
+// `<profile>/node_modules`, from which the walk DOES succeed.
+// `dependencyClosure` resolves those roots with
 // `packageDirFromAnchor(layer npm package.json, dep)`, i.e. through the bundle
 // directory's own `node_modules` — so a fixture that omits it would test a
 // resolution path that never exists in production, and fail for the wrong
@@ -207,10 +236,10 @@ const BUNDLE_COPY = ['package.json', 'cordis.patch.yml', 'lib', 'vendor', 'node_
  * This repo's `node_modules/@deepseek-ai/*` are junctions into the SOURCE
  * WORKSPACE. That is fine for `verify-bundle.mjs`, which only reads them, but
  * wrong for a boot: the fixture copies the bundle's `node_modules` into a temp
- * profile, and `better-sidebar` then resolves `@deepseek-ai/dsh-session` through
- * those copies. The source tree reports `0.1.2-alpha.2`, whose `dsh-session`
- * does NOT export `SessionLogOffset` — so `[A]` died on
- * `better-sidebar … does not provide an export named 'SessionLogOffset'`
+ * profile, and the vendored rows then resolve `@deepseek-ai/dsh-session`
+ * through those copies. The source tree reports `0.1.2-alpha.2`, whose
+ * `dsh-session` does NOT export `SessionLogOffset` — so `[A]` died on
+ * `… does not provide an export named 'SessionLogOffset'`
  * while the real published install boots fine, because there the symbol comes
  * from the dsh installation (`dsh-base` depends on `dsh-session@^0.1.5-rc.3`).
  *
@@ -280,10 +309,17 @@ const SAFE_DELETE_ENV = { CODEBUDDY_SAFE_DELETE_ENABLED: '0', NODE_OPTIONS: '' }
 /**
  * Strings that must never appear in a healthy boot's stderr.
  *
- * `failed to apply loader entry` is excluded on purpose: the version skew makes
- * it unavoidable, and the skew is caught precisely by {@link isForgivenSkewFailure}
- * instead — a substring check here would either forbid the known skew or go
- * blind to every other apply failure. The two checks below have no such tension.
+ * `duplicate loader entry id` is the signature of the shape-(2) assembly
+ * conflict. It is forbidden here because this list applies to `[A]` — the
+ * shape-(1) run, where our ids are free and a collision would therefore mean a
+ * genuine defect. The same string is *expected* on shape (2), which is why
+ * {@link runSectionYield} asserts its presence separately instead of relaxing
+ * this list.
+ *
+ * `failed to apply loader entry` is excluded on purpose: it is the generic
+ * wrapper, and the specific apply failures worth catching are enumerated here by
+ * their own text. A substring check on the wrapper would forbid every variant at
+ * once, including ones that are environmental.
  */
 const FORBIDDEN_STDERR = [
   'duplicate loader entry id',
@@ -291,12 +327,12 @@ const FORBIDDEN_STDERR = [
 ]
 // The row ids this bundle contributes, in patch order. Used to pin that the
 // audit names exactly our rows (and nothing upstream) when the layer is absent.
+// 0.4.0 dropped `better-sidebar` — the panel now rides the official sidebar.
 const OWN_ROW_IDS = [
   'remote-hosts',
   'remote-hosts-ssh',
   'remote-host-controller',
   'tool-remote-host',
-  'better-sidebar',
   'ui-remote-host',
 ]
 
@@ -617,12 +653,14 @@ function dumpConfig(home) {
 /**
  * Assert one healthy boot run's outcome.
  *
- * With `ATTEST` this bundle's own skew row is tolerated, but only in the narrow
- * way documented at the top: the row id must appear in the failure report with
- * the skew signature, the audit must report ZERO pending rows, and every other
- * forbidden string must still be absent. The pending-row check is what keeps the
- * flag honest — it is the direct evidence that all six of this bundle's rows
- * activated, which is the property the attestation claims.
+ * With `ATTEST` this bundle's own skew rows are tolerated, but only in the
+ * narrow way documented at the top: the row id must appear in the failure report
+ * with the skew signature, the audit must report ZERO pending rows, and every
+ * other forbidden string must still be absent. (As of 0.4.0 the skew list is
+ * empty, so nothing is forgiven in practice and this path is dormant.) The
+ * pending-row check is what keeps the flag honest — it is the direct evidence
+ * that all five of this bundle's rows activated, which is the property the
+ * attestation claims.
  *
  * `baseBooting` separates the two possible worlds:
  *
@@ -651,11 +689,11 @@ function assertRun(label, run, baseBooting = true) {
     console.log(`       [attest] 容忍 ${id} 的版本偏斜失败（${line.slice(0, 88)}…）`)
   }
   if (ATTEST) {
-    // The attestation rests on this: the six rows this bundle contributes must
+    // The attestation rests on this: the five rows this bundle contributes must
     // all have activated. A single pending row invalidates the whole claim, so
     // this check — not merely "the process exited" — is what earns the pass.
     check(
-      `[${label}] 审计报告 0 条 pending 行（本包 6 行全部激活）`,
+      `[${label}] 审计报告 0 条 pending 行（本包 5 行全部激活）`,
       run.stderr.includes(': pending (') === false,
     )
   }
@@ -741,14 +779,13 @@ function isForgivenSkewFailure(id, stderr) {
 
 /**
  * Run section `[A]`: boot the profile that DOES mount this bundle and assert
- * that the six rows load and the registry reflects `DSH_REMOTE_CLUSTER_HOSTS`.
+ * that the five rows load and the registry reflects `DSH_REMOTE_CLUSTER_HOSTS`.
  *
  * This is the only section that needs a runnable harness, which is why it is
  * factored out: `main` calls it only when the precondition probe found shape
- * (1) — our six ids free — and a base tree that settles. Attempting it anyway
- * on this workspace would produce a `duplicate loader entry id: remote-hosts`
- * abort, which the caller has already reported as an environment
- * incompatibility rather than a defect.
+ * (1) — our five ids free — and a base tree that settles. Attempting it anyway
+ * on this workspace would leave every one of our rows disabled by its own yield
+ * guard, so `[A]` would assert nothing about them (see the file header).
  *
  * @param baseBooting - whether a stock base tree booted, used to decide whether
  * the registry-reading assertions are real checks or `SKIP`s.
@@ -788,11 +825,69 @@ async function runSectionA(baseBooting) {
 }
 
 /**
+ * Characterise the shape-(2) collision, which 0.4.0 does NOT try to survive.
+ *
+ * This section exists because an earlier 0.4.0 draft claimed to *avoid* the
+ * collision with a per-row `disabled: !!js '... loader.store["<id>"] ...'`
+ * guard, and every static check passed while a real boot still died on
+ * `duplicate loader entry id: remote-hosts`. The reason is now measured, not
+ * reasoned: `loader.store` is written by `EntryGroup.create`
+ * (group.ts:22-23), which `update` calls only AFTER its duplicate scan
+ * (:59-66), so at the throw the map is empty and any such guard evaluates to
+ * "not disabled". Instrumenting the throw printed `storeKeys=[]` while the
+ * same `config` list held `remote-hosts` twice.
+ *
+ * So this bundle deliberately does NOT guard, and instead declares the boundary
+ * (README 已知限制 1): the target dsh must not already declare these ids. This
+ * section turns that from prose into a measured property — the collision on
+ * shape (2) is asserted to be PRESENT and correctly attributed, so the day it
+ * disappears (or the failure text changes), we find out here.
+ *
+ * @param baseBooting - whether a stock base tree booted; gates the assertion
+ * that the base is itself fine, separating "our collision" from "bad env".
+ */
+async function runSectionYield(baseBooting) {
+  const fixture = createFixture()
+  console.log(`collision fixture home: ${fixture.home}`)
+  try {
+    const run = await bootOnce(fixture.home, fixture.marker, undefined)
+    // The expected outcome on shape (2): the duplicate reaches the loader and
+    // the group is rolled back. Asserting the presence of the diagnostic is
+    // what makes this section evidence rather than description.
+    const collided = run.stderr.includes('duplicate loader entry id:')
+    check('[冲突] in-tree 形态下重复 id 确实被 loader 报出（本包不试图让位）', collided === true)
+    if (collided) {
+      const id = run.stderr.match(/duplicate loader entry id: ([\w-]+)/u)?.[1] ?? '(未知)'
+      console.log(`       冲突 id: ${id}（本包 insert 与 in-tree bundle 自带行同名）`)
+    }
+    // Attribution matters: our own row is named by the include wrapper, but the
+    // failure must be reported as the include collision, not as our plugin
+    // throwing on import — those are different defects with different fixes.
+    check(
+      '[冲突] 报错形态是 include 重复 id，而非本包插件导入失败',
+      run.stderr.includes('failed to apply loader entry include') === true
+        && run.stderr.includes('failed to import loader entry remote-host') === false,
+    )
+    // The base tree's health is independent of our layer, so a boot that fails
+    // must fail for the collision alone — no pending rows owned by anyone else.
+    check(
+      '[冲突] 失败仅由本层的重复 id 引起（没有其它 pending 行）',
+      run.stderr.includes(': pending (') === false,
+    )
+    if (baseBooting === true) {
+      console.log('       注：base 自身在本机可正常 boot —— 上表冲突是本层 insert 与 in-tree 行同名所致')
+    }
+  } finally {
+    rmSync(fixture.home, { recursive: true, force: true })
+  }
+}
+
+/**
  * Assert the `[无本层]` counterfactual for shape (1), where the base does NOT
  * carry our rows.
  *
  * The load-bearing half is the NEGATIVE one: nothing may name this package or
- * any of its six row ids. A mention would mean the layer was still mounted, and
+ * any of its five row ids. A mention would mean the layer was still mounted, and
  * then comparing `[A]` against `[无本层]` would prove nothing about the layer.
  * That half holds on every shape and is always asserted.
  *
@@ -850,9 +945,9 @@ const main = async () => {
   // whether a boot settles, and asking it via a boot would (a) cost a full
   // startup and (b) conflate two different environment facts into one verdict.
   //
-  // Getting this wrong is not hypothetical: the in-tree sources declare all six
-  // ids, so a probe that skipped this step reported a legitimate collision as a
-  // wall of failures that looked like defects in this package.
+  // Getting this wrong is not hypothetical: the in-tree sources declare all five
+  // ids this bundle inserts, so a probe that skipped this step would report a
+  // wall of disabled-by-design rows as if they were defects in this package.
   const bare = createFixture({ withBundle: false, injectFixture: false })
   console.log(`no-bundle fixture home: ${bare.home}`)
   let baseOwnedIds = []
@@ -879,12 +974,17 @@ const main = async () => {
   }
 
   if (baseOwnedIds.length > 0) {
-    console.log(`\n!! 环境不兼容：本工作区 in-tree harness 已声明这些行 id：${baseOwnedIds.join(', ')}。`)
+    console.log(`\n!! 环境不适用：本工作区 in-tree harness 已声明这些行 id：${baseOwnedIds.join(', ')}。`)
     console.log('   本包用 insert: 提供同名行（applyEntryPatches 无条件 data.push，不去重），')
-    console.log('   而重复 id 由 loader 在 boot 时抛 `duplicate loader entry id` 中止整树。')
-    console.log('   这是 insert 式装配的固有性质，不是本 patch 的缺陷 —— 已发布的 npm dsh')
-    console.log('   （dsh-base/dsh-web-app@0.1.5-rc.3）不含这些行，本 patch 正是为那种形态写的。')
+    console.log('   0.4.0 **不试图让位** —— 行级 disabled 求值晚于重复 id 检查，实测拦不住。')
+    console.log('   因此本机这个形态下重复 id 是必然的装配冲突，整树在 boot 时中止。')
+    console.log('   这是 insert 式装配的适用边界，不是本 patch 的缺陷 —— 已发布的 npm dsh')
+    console.log('   （dsh-base/dsh-web-app@0.1.7-rc.2）不含这些行，本 patch 正是为那种形态写的。')
     console.log('   故 [A] 与 [无本层] 在本机都不适用，整体跳过；[A] 的直接证据在 verify-bundle.mjs。')
+    // Shape 2 is the only place the collision is observable end-to-end. Measured
+    // rather than merely described: the earlier draft's guard was proven wrong
+    // right here, by a real boot, after all static checks had passed.
+    await runSectionYield(baseBooting)
   } else if (baseBooting === false) {
     const row = upstreamFailureRow(baseStderr) ?? '(未识别)'
     console.log(`\n!! 环境限制：stock base+web-app 层在本工作区无法 boot（上游行 ${row} 导入失败）。`)
@@ -900,7 +1000,7 @@ const main = async () => {
     await runSectionA(baseBooting)
   } else {
     console.log('\nSKIP :: [A] 整节跳过 —— ' + (baseOwnedIds.length > 0
-      ? 'in-tree base 已占用本包行 id（见上）'
+      ? 'in-tree base 已占用本包行 id，本层与自带行同名冲突（见上）'
       : 'base 层在本机无法 boot（见上）'))
     if (baseOwnedIds.length > 0) {
       console.log('SKIP :: [无本层] 反证同样不适用 —— base 本来就自带这些行，移除本层不会移除能力')
@@ -909,7 +1009,7 @@ const main = async () => {
 
   if (ATTEST) {
     console.log('\n注：本次以 DSH_SMOKE_ATTEST=1 运行 —— 只在版本偏斜导致的失败上放宽，')
-    console.log('    且要求审计 0 条 pending 行。本包 6 行的直接证据在 verify-bundle.mjs，')
+    console.log('    且要求审计 0 条 pending 行。本包 5 行的直接证据在 verify-bundle.mjs，')
     console.log('    详见本文件头部与 README 的「已知限制」。')
   }
 

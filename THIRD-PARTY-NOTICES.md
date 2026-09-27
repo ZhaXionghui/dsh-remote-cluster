@@ -17,14 +17,43 @@ where explicitly noted below.
 | `vendor/remote-host-controller/` | `@deepseek-ai/dsh-api-remote-host-controller` | `0.1.2-alpha.2` | MIT |
 | `vendor/ui-remote-host/` | `@deepseek-ai/dsh-client-ui-remote-host` | `0.1.2-alpha.2` | MIT |
 
+> **Note on `vendor/ui-remote-host`:** its `lib/client.js` has been **modified**
+> in this repository — see section 3 — to integrate with the official right
+> sidebar instead of the retired `dsh-better-sidebar`. Every other file in that
+> directory, and all four other packages, are byte-identical to upstream apart
+> from the changes listed below.
+
 **Source:** DeepSeek Harness, `packages/host/remote-host`,
 `packages/host/remote-host-ssh`, `packages/host/tool-remote-host`,
 `packages/api/remote-host-controller`, `packages/client/ui-remote-host`.
 
 - Upstream repository: <https://github.com/deepseek-ai/deepseek-harness>
 - Copyright: DeepSeek. Licensed MIT; see each package's `package.json`
-  `"license": "MIT"` field. The upstream LICENSE text is the standard MIT
-  licence and is reproduced in this repository's top-level `LICENSE` file.
+  `"license": "MIT"` field. The upstream licence is the standard MIT text, whose
+  operative paragraphs are reproduced here so this file is self-contained:
+
+```
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+The verbatim copyright line for this repository's own copy is in the top-level
+`LICENSE` file.
 
 **Why these are vendored rather than installed:** these five packages are **not
 published to any npm registry**
@@ -70,83 +99,19 @@ identical to upstream.
    module to the nearest `package.json` and requires the `name` to match the
    expected package; `main` and `exports` now point only at the shipped `lib/`
    files.
+4. **Migrated `ui-remote-host`'s browser half to the official sidebar** (0.4.0).
+   `lib/client.js` was updated to register through `sidebarRightTabs` /
+   `sidebar.right.pane.tab` instead of the retired `betterSidebar` service, and
+   its `package.json` `dsh.client.inject` now names
+   `@deepseek-ai/dsh-client-ui-sidebar-right`. Two locale keys were added
+   (`guideDescription` in both dictionaries) for the tab-type guide entry. See
+   section 3 for why the service it previously used had to go.
 
 ---
 
-## 2. `dsh-better-sidebar`
+## 2. Runtime dependencies declared by this bundle
 
-| Directory | Upstream package | Version | Licence |
-|---|---|---|---|
-| `vendor/better-sidebar/` | `dsh-better-sidebar` | `0.19.1` | MIT |
-
-- Upstream repository: <https://github.com/omdsh-dev/DSH-better-sidebar>
-- Copyright (c) 2026 dsh-external
-- The full upstream licence text is preserved verbatim at
-  `vendor/better-sidebar/LICENSE` and reproduced here:
-
-```
-MIT License
-
-Copyright (c) 2026 dsh-external
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-```
-
-**Why it is vendored:** `@deepseek-ai/dsh-client-ui-remote-host`'s browser half
-injects the `betterSidebar` service, which only `dsh-better-sidebar` provides.
-Without that row in the tree the panel's module cannot activate, and the Web
-client's boot audit (`assertEntriesActive`) fails the whole page. Version
-`0.19.1` was chosen because its peer range (`^0.1.5-rc.1`) matches the
-`0.1.5-rc.3` dsh ecosystem exactly.
-
-### Modifications made to `dsh-better-sidebar`
-
-**None.** `vendor/better-sidebar/lib/` and `vendor/better-sidebar/LICENSE` are
-byte-for-byte copies of the published `dsh-better-sidebar@0.19.1` npm tarball.
-Its `package.json` retains its original `name`, `version`, `license`, `main`,
-`exports` and `dsh.client` declaration verbatim; only fields irrelevant to a
-vendored runtime copy were dropped (`dependencies`, `devDependencies`,
-`scripts`, `peerDependencies`, `peerDependenciesMeta`, `files`, `engines`,
-`repository`, `publishConfig`). Its `cordis.patch.yml` is **not** shipped —
-this bundle mounts the row directly from its own patch (see below), so the
-upstream aggregate-mount guard does not apply.
-
-### Third-party runtime dependencies of `dsh-better-sidebar`
-
-`dsh-better-sidebar`'s host half imports two packages that are **not** part of a
-plain dsh installation. Both are declared in this bundle's `dependencies` so
-pnpm installs them into the profile, where the vendored code resolves them:
-
-| Package | Declared range | Purpose | Licence |
-|---|---|---|---|
-| `schemastery` | `^3.18.0` | host-half config schema | MIT |
-| `ws` | `^8.18.0` | host-half WebSocket server | MIT |
-
-Its browser halves (`lib/client*.js`) `require(...)` only `react`,
-`react-dom` and `@deepseek-ai/dsh-client-ui-primitives`; all three are supplied
-by the Web client's static module seed and need no Node resolution.
-
----
-
-## 3. Runtime dependencies declared by this bundle
-
-Eleven packages, in three groups. Getting this list wrong makes the bundle
+Ten packages, in three groups. Getting this list wrong makes the bundle
 **uninstallable**, so it is pinned by an assertion rather than maintained by
 hand — see `tools/verify-bundle.mjs` family `[13]`, which walks the vendored
 import graph and fails if any specifier it reaches has no owner here.
@@ -157,34 +122,33 @@ import graph and fails if any specifier it reaches has no owner here.
 | `@deepseek-ai/dsh-native-command` | `^0.1.5-rc.3` | `vendor/host-remote-host-ssh` | MIT |
 | `@deepseek-ai/dsh-output-retention` | `^0.1.5-rc.3` | `vendor/host-remote-host-ssh` | MIT |
 | `@deepseek-ai/dsh-util-values` | `^0.1.5-rc.3` | `vendor/host-remote-host-ssh` | MIT |
-| `@deepseek-ai/dsh-settings` | `^0.1.5-rc.3` | `vendor/better-sidebar` | MIT |
+| `@deepseek-ai/dsh-settings` | `^0.1.5-rc.3` | `vendor/host-remote-host-ssh` | MIT |
 | `@deepseek-ai/dsh-typert-protocol` | `^0.1.5-rc.3` | `vendor/remote-host-controller` | MIT |
 | `@deepseek-ai/schemastery` | `3.18.2` | `vendor/host-remote-host-ssh` | MIT |
-| `schemastery` | `^3.18.0` | `vendor/better-sidebar` | MIT |
 | `ssh2` | `^1.17.0` | `vendor/host-remote-host-ssh` | MIT |
-| `ws` | `^8.18.0` | `vendor/better-sidebar` | MIT |
+| `ws` | `^8.18.0` | `vendor/remote-host-controller` | MIT |
 | `zod` | `^4.4.3` | `vendor/remote-host-controller` (`./typert` subpath) | MIT |
 
-### `schemastery` and `@deepseek-ai/schemastery` are two different packages
+### Why the scoped fork is pinned to an exact version
 
-This is the single easiest mistake to make here, and 0.3.0 shipped with it:
+`@deepseek-ai/schemastery` is the **scoped fork**, a different package from the
+native `schemastery` on npm. Only the fork is used here — the native package was
+pulled in by the retired `dsh-better-sidebar` and is no longer declared.
 
-| Package | Latest on npm | Imported by |
-|---|---|---|
-| `schemastery` (native) | `3.18.0` | `vendor/better-sidebar` |
-| `@deepseek-ai/schemastery` (scoped fork) | `3.18.4` | `vendor/host-remote-host-ssh` |
+The fork is pinned to exactly `3.18.2` rather than a caret range because
+`@deepseek-ai/dsh-settings@0.1.5-rc.3` declares an **exact** peer on `3.18.2`;
+a `^` instead resolves to `3.18.4` and produces an unmet-peer warning.
 
-The native package has **never published a 3.18.2**, so declaring
-`schemastery: "^3.18.2"` — as this bundle originally did — resolves to nothing
-and `dsh plugin add` aborts with `ERR_PNPM_NO_MATCHING_VERSION`. Both must be
-declared, each with a satisfiable range.
-
-The failure was invisible in the harness source tree because
-`pnpm-workspace.yaml` there carries
-`overrides: {'@deepseek-ai/schemastery': 'link:vendor/schemastery'}`, so the
-bare name resolved to *something* regardless of what was declared. That is why
-the check now derives its verdict from the import graph and the manifest
-instead of trusting that a resolution succeeded locally.
+A related failure shipped in 0.3.0 and is worth recording, because the wrong
+lesson is easy to draw from it: the manifest then declared the *native* name
+while the vendored ssh provider imports the *scoped* one, and the native package
+has **never published a 3.18.2**, so `dsh plugin add` aborted with
+`ERR_PNPM_NO_MATCHING_VERSION`. That failure was invisible inside the harness
+source tree, because `pnpm-workspace.yaml` there carries
+`overrides: {'@deepseek-ai/schemastery': 'link:vendor/schemastery'}`, so the bare
+name resolved to *something* regardless of what was declared. The check
+therefore derives its verdict from the import graph and the manifest, never from
+the fact that a resolution happened to succeed locally.
 
 ### Why `zod` is declared even though nothing `import`s it directly
 
@@ -202,3 +166,88 @@ vendored `exports` target.
 
 These are ordinary `dependencies`: pnpm installs them from the registry into the
 profile's `node_modules`, and the vendored code resolves them from there.
+
+### A harmless install warning
+
+`ssh2` carries an **optional** native binding (`cpu-features`) whose `node-gyp`
+step needs a Python interpreter. On a machine without one, `pnpm add` prints
+
+```
+node_modules/ssh2 install: gyp ERR! find Python
+node_modules/ssh2 install: Failed to build optional crypto binding
+```
+
+and still exits `0`. This is **not an error**: `ssh2` falls back to a pure-JS
+implementation, the binding is optional, and the harness's own
+`pnpm-workspace.yaml` sets `cpu-features: false` for the same reason. No
+capability of this bundle depends on it.
+
+---
+
+## 3. The official right sidebar is consumed, not vendored
+
+Since `dsh-web-app@0.1.7-rc.2` the sidebar is provided by the harness itself
+(`@deepseek-ai/dsh-client-ui-sidebar`, `…-sidebar-right`, `…-sidebar-files`,
+`…-sidebar-browser`, `…-sidebar-terminal`, `…-sidebar-documentpreview`).
+`vendor/ui-remote-host` therefore **consumes** the official services
+(`sidebarRightTabs`, `sidebarRight`) instead of shipping a sidebar of its own,
+and nothing from that family is redistributed here.
+
+Until 0.3.0 this bundle inlined `dsh-better-sidebar@0.19.1` to supply a sidebar.
+That copy was **removed** in 0.4.0, and the reason is worth stating precisely
+because it is a version-skew defect rather than a preference:
+
+`conversation.chat.turnTail` changed contract at `0.1.7`. It used to be a
+`kind: "chain"` slot (registration supplies `options.select`); it is now
+`kind: "list"` (registration supplies `options.id`). `dsh-better-sidebar@0.19.1`
+registers it the old way, so on a new host it throws
+
+```
+[dsh-better-sidebar] interception error: list slot "conversation.chat.turnTail" requires options.id
+```
+
+from `@deepseek-ai/dsh-client-ui-slots/lib/index.js` (`case "list"`). Upstream
+reached the same conclusion independently: `dsh-web-app@0.1.7-rc.2`'s own
+`cordis.patch.yml` contains no `better-sidebar` row at all. The full evidence
+trail is in `_acc/BETTER-SIDEBAR-ROOTCAUSE.md`.
+
+---
+
+## 4. Duplicate entry ids are a declared constraint, not a guarded case
+
+The patch `insert`s five rows unconditionally, because the include's insert
+branch is a bare `data.push(...insert)` with no dedup
+(`vendor/include/src/index.ts:93-95`) and it appends into the same top-level
+array the host bundle wrote. If another bundle already declares one of those
+ids, that array holds two rows with the same id and the loader rejects it:
+
+```
+TypeError: duplicate loader entry id: <id>
+```
+
+That throw happens **before** any `disabled` flag is consulted
+(`vendor/loader/src/config/group.ts:59-66`) and rolls the entire group back
+(`:70-78`) — which is why the desktop client reported those rows as 「异常」
+rather than merely skipping them.
+
+An earlier 0.4.0 draft tried to absorb the collision with a per-row
+`disabled: !!js '... loader.store["<id>"] !== undefined'` guard, so that a row
+whose id was already taken would disable itself. **That does not work**, and the
+failure mode is worth recording because it passed every static check: the guard
+reads `loader.store`, but `store` is written by `EntryGroup.create`
+(`group.ts:22-23`), which `update` calls only *after* its duplicate scan. At the
+throw the map is provably empty (instrumenting the loader printed
+`storeKeys=[]`), so the guard always evaluates to "not disabled" and absorbs
+nothing. There is no alternative: `PatchOptions` has no delete/rename key
+(`include/src/index.ts:145-160`), and a nested `group` shares one id namespace
+because `Group` passes the parent tree (`group.ts:119`).
+
+The guards were therefore removed and the constraint declared instead: this
+bundle requires a target dsh whose bundles do not already declare these five
+ids — true of the published `dsh-base`/`dsh-web-app@0.1.7-rc.2` (verified: zero
+matches for `remote-host` in their patches). `tools/verify-bundle.mjs` family
+`[15]` asserts no row carries a guard and re-checks the four structural
+premises that make one useless, so a future "fix" in that direction fails
+loudly; `tools/boot-smoke.mjs` characterises the collision on the in-tree shape.
+Full evidence: `_acc/YIELD-GUARD-REFUTED.md` and `_acc/DESKTOP-DIAGNOSIS.md`.
+

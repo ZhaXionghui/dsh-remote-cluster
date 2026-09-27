@@ -10,10 +10,12 @@
  *   * `interpolate` evaluates the `!!js` inventory expression against pinned
  *     `process.env` scopes, proving the three states (unset / empty / populated).
  *
- * Since 0.3.0 this bundle is a *functional plugin*, not a config overlay: its
- * patch `insert`s the whole remote-host subsystem (five upstream packages) plus
- * the `dsh-better-sidebar` workbench they need, all from the vended copies under
- * `vendor/`. The assertions below therefore cover:
+ * Since 0.4.0 this bundle is a *functional plugin*, not a config overlay: its
+ * patch `insert`s the whole remote-host subsystem (five upstream packages) from
+ * the vended copies under `vendor/`, and integrates with the OFFICIAL right
+ * sidebar (`@deepseek-ai/dsh-client-ui-sidebar-right`, shipped by dsh-web-app
+ * since `0.1.7-rc.2`) rather than vendoring a sidebar of its own. The assertions
+ * below therefore cover:
  *
  *   [1]-[5]  patch shape, insert-only, row order, the inventory expression
  *   [6]      every row's `name` resolves to an on-disk vendored module
@@ -25,6 +27,8 @@
  *   [12]     the retired 0.2.0 guard is gone and nothing references it
  *   [13]     every bare import in `vendor/` has an owner: a relative path, a
  *            declared dependency, or a package the published dsh provides
+ *   [15]     the insert is unconditional (no guard can yield) and the
+ *            boundary that follows from it is documented
  *
  * Run: node tools/verify-bundle.mjs
  */
@@ -89,29 +93,34 @@ check('[1] 该行只有 insert 键（无 id，故不是 id-targeted override）'
 check('[1] 该行键集合恰为 {insert}', Object.keys(container ?? {}).sort().join(',') === 'insert')
 
 const insertRows = container.insert
-check('[1] insert 恰有 6 行（5 个 remote-host 包 + better-sidebar）', insertRows.length === 6)
+check('[1] insert 恰有 5 行（5 个 remote-host 包；UI 侧改由官方侧栏承载）', insertRows.length === 5)
 
 // ── 2. Row ids and order ───────────────────────────────────────────────────
-// Order is load-bearing: `better-sidebar` must precede `ui-remote-host`, whose
-// client half injects the `betterSidebar` service. A swap would leave that entry
-// PENDING and the Web boot audit would fail the whole page.
+// Order follows the runtime dependency direction: the registry/seam provider
+// first, then the SSH provider, then the RPC projection, then the tool face,
+// then the UI. `ui-remote-host` is last because its client half consumes the
+// `remote.remoteHosts` namespace the controller projects, and the client module
+// graph requires an injected row to arrive first.
 const expectedOrder = [
   'remote-hosts',
   'remote-hosts-ssh',
   'remote-host-controller',
   'tool-remote-host',
-  'better-sidebar',
   'ui-remote-host',
 ]
 const actualOrder = insertRows.map(row => row.id)
-check('[2] 6 行的 id 与顺序完全符合预期', equalJson(actualOrder, expectedOrder))
+check('[2] 5 行的 id 与顺序完全符合预期', equalJson(actualOrder, expectedOrder))
 if (equalJson(actualOrder, expectedOrder) === false) {
   console.log(`       expected: ${JSON.stringify(expectedOrder)}`)
   console.log(`       actual:   ${JSON.stringify(actualOrder)}`)
 }
 check(
-  '[2] better-sidebar 排在 ui-remote-host 之前（否则 UI 条目会 pending）',
-  actualOrder.indexOf('better-sidebar') < actualOrder.indexOf('ui-remote-host'),
+  '[2] remote-hosts（seam 提供者）排在所有消费者之前',
+  actualOrder.indexOf('remote-hosts') === 0,
+)
+check(
+  '[2] ui-remote-host 排在 remote-host-controller 之后（它消费后者投影的 RPC 面）',
+  actualOrder.indexOf('remote-host-controller') < actualOrder.indexOf('ui-remote-host'),
 )
 
 // ── 3. Every name is a ./vendor/<pkg>/lib/index.js relative path ────────────
@@ -126,7 +135,7 @@ check(
 // repo-side literal is recovered from the patch *text* (the `name:` scalars),
 // and the row objects only serve to cross-check the resolved URL.
 const literalNames = [...patchText.matchAll(/^\s*-?\s*name:\s*(\S+)\s*$/gmu)].map(m => m[1])
-check('[3] patch 文本里恰好读出 6 个 name 字面量', literalNames.length === insertRows.length)
+check('[3] patch 文本里恰好读出 5 个 name 字面量', literalNames.length === insertRows.length)
 for (const [index, row] of insertRows.entries()) {
   const literal = literalNames[index]
   check(`[3] '${row.id}' 的 name 是 ./ 开头的相对路径（${literal}）`, typeof literal === 'string' && literal.startsWith('./'))
@@ -139,7 +148,7 @@ for (const [index, row] of insertRows.entries()) {
   )
 }
 check(
-  '[3] 6 行的 name 互不相同',
+  '[3] 5 行的 name 互不相同',
   new Set(insertRows.map(row => row.name)).size === insertRows.length,
 )
 
@@ -178,6 +187,11 @@ check('[5] 三个 base 默认值随行携带', config.passwordControlMaster === 
 // against the published tarballs), so this layer is the sole provider. Driving
 // the include's real algorithm over an empty root proves that: every row lands,
 // no patch is skipped, nothing warns.
+//
+// Note this is the "nothing else mounted them" case only. The complementary
+// case — another layer already owns an id — is family [15]: it is UNSUPPORTED
+// (the duplicate check precedes any `disabled`, so the insert cannot yield),
+// and the boundary is pinned there rather than papered over.
 const warnings = []
 const composed = applyEntryPatches([], structuredClone(patches), (message, ...args) => {
   let index = 0
@@ -185,7 +199,7 @@ const composed = applyEntryPatches([], structuredClone(patches), (message, ...ar
 })
 check('[6] 应用到空 root 时不触发任何 warn', warnings.length === 0)
 if (warnings.length > 0) console.log(`       ${warnings.join(' | ')}`)
-check('[6] 空 root 恰好得到 6 行', composed.length === 6)
+check('[6] 空 root 恰好得到 5 行', composed.length === 5)
 check('[6] 组合后的 id 顺序不变', equalJson(composed.map(row => row.id), expectedOrder))
 
 // ── 7. Vendored package manifests ──────────────────────────────────────────
@@ -197,7 +211,6 @@ const vendorExpectations = [
   { dir: 'host-remote-host-ssh', name: '@deepseek-ai/dsh-host-remote-host-ssh', client: false },
   { dir: 'remote-host-controller', name: '@deepseek-ai/dsh-api-remote-host-controller', client: false },
   { dir: 'tool-remote-host', name: '@deepseek-ai/dsh-tool-remote-host', client: false },
-  { dir: 'better-sidebar', name: 'dsh-better-sidebar', client: true },
   { dir: 'ui-remote-host', name: '@deepseek-ai/dsh-client-ui-remote-host', client: true },
 ]
 for (const expectation of vendorExpectations) {
@@ -219,22 +232,33 @@ for (const expectation of vendorExpectations) {
     check(`[7] vendor/${expectation.dir} 声明 dsh.client.platform === 'web'`, vendored.dsh?.client?.platform === 'web')
   }
 }
-// The UI panel injects `dsh-better-sidebar` by that exact name, so the two
-// manifests must agree.
+// The UI panel was migrated off `dsh-better-sidebar` onto the official right
+// sidebar. Both halves of that migration are asserted here, because a half-done
+// migration is exactly the failure mode: the manifest could stop naming the
+// retired service while the client bundle still calls it, and the panel would
+// then simply never mount.
 const uiManifest = JSON.parse(readFileSync(join(BUNDLE_DIR, 'vendor/ui-remote-host/package.json'), 'utf8'))
 check(
-  "[7] ui-remote-host 的 dsh.client.inject 含 'dsh-better-sidebar'",
-  Array.isArray(uiManifest.dsh?.client?.inject) && uiManifest.dsh.client.inject.includes('dsh-better-sidebar'),
+  "[7] ui-remote-host 的 dsh.client.inject 已不再引用 dsh-better-sidebar",
+  Array.isArray(uiManifest.dsh?.client?.inject) && uiManifest.dsh.client.inject.includes('dsh-better-sidebar') === false,
+  `实际: ${JSON.stringify(uiManifest.dsh?.client?.inject)}`,
 )
-const sidebarManifest = JSON.parse(readFileSync(join(BUNDLE_DIR, 'vendor/better-sidebar/package.json'), 'utf8'))
 check(
-  "[7] better-sidebar 的 name 恰好满足上面那条 inject（'dsh-better-sidebar'）",
-  sidebarManifest.name === 'dsh-better-sidebar',
+  "[7] ui-remote-host 的 dsh.client.inject 声明了官方右侧栏 @deepseek-ai/dsh-client-ui-sidebar-right",
+  Array.isArray(uiManifest.dsh?.client?.inject) && uiManifest.dsh.client.inject.includes('@deepseek-ai/dsh-client-ui-sidebar-right'),
+  `实际: ${JSON.stringify(uiManifest.dsh?.client?.inject)}`,
+)
+check(
+  '[7] vendor/better-sidebar 目录已从仓库移除（不再自带侧栏实现）',
+  existsSync(join(BUNDLE_DIR, 'vendor/better-sidebar')) === false,
 )
 
+const stripComments = (src) => src.replace(/\/\*[\s\S]*?\*\//gu, '').replace(/(^|[^:])\/\/.*$/gmu, '$1')
+
 // ── 8. The vendored host halves load as real ESM ───────────────────────────
-// Five of the six packages have a browser half that only the harness's Web
-// client can execute; their host halves, however, are plain ESM.
+// Four of the five packages have a browser half that only the harness's Web
+// client can execute; their host halves, however, are plain ESM. The fifth,
+// `ui-remote-host`, is client-only, so it is checked differently below.
 //
 // Resolution here is set up the way the harness sets it up, because a bare
 // import inside a vendored file walks UP from that file and cannot see any
@@ -266,32 +290,34 @@ for (const dir of hostHalves) {
   if (outcome !== 'ok') console.log(`       ${outcome}\n       ${detail}`)
 }
 
-// `better-sidebar` is held to the same bar, with one documented exception: it
-// targets `^0.1.5-rc.1`, and this repository's harness dependency links are at
-// `0.1.2-alpha.2`, which does not export `SessionLogOffset`. Every module it
-// imports must still RESOLVE (that is a property of what we ship), so the
-// assertion accepts that one named-export error and nothing else.
+// `ui-remote-host`'s host half is a presence stub and its browser half is a
+// `__ModuleLoader__` bundle, so neither can be imported by Node here. What CAN
+// be asserted without a browser is that the browser half is still a well-formed
+// bundle and that it no longer touches the retired `betterSidebar` service in
+// any form — the exact regression this release exists to prevent.
 {
-  const dir = 'better-sidebar'
-  const entry = join(BUNDLE_DIR, 'vendor', dir, 'lib', 'index.js')
-  let outcome = 'ok'
-  let detail = ''
-  try {
-    const module = await import(pathToFileURL(entry).href)
-    if (typeof module !== 'object' || Object.keys(module).length === 0) outcome = 'empty-module'
-  } catch (error) {
-    const code = String(error?.code ?? '')
-    const message = String(error?.message ?? '')
-    detail = message.split('\n')[0].slice(0, 200)
-    // A missing module is a packaging defect and always fails.
-    if (code === 'ERR_MODULE_NOT_FOUND') outcome = 'module-not-found'
-    // A named-export mismatch against the pinned alpha harness is the known,
-    // documented skew; the modules themselves resolved.
-    else if (/does not provide an export named/u.test(message)) outcome = 'ok'
-    else outcome = code !== '' ? code : message || 'unknown'
-  }
-  check(`[8] vendor/${dir}/lib/index.js 的全部 import 可解析（已知的 0.1.5×0.1.2 命名导出偏斜除外）`, outcome === 'ok')
-  if (outcome !== 'ok') console.log(`       ${outcome}\n       ${detail}`)
+  const clientPath = join(BUNDLE_DIR, 'vendor', 'ui-remote-host', 'lib', 'client.js')
+  const source = stripComments(readFileSync(clientPath, 'utf8'))
+  check(
+    '[8] ui-remote-host 的浏览器产物仍是 __ModuleLoader__ 包',
+    source.includes('window.__ModuleLoader__.load('),
+  )
+  check(
+    '[8] ui-remote-host 的浏览器产物不再引用 betterSidebar 服务',
+    /betterSidebar|better-sidebar/u.test(source) === false,
+  )
+  check(
+    '[8] ui-remote-host 的浏览器产物注册官方 sidebarRightTabs 服务',
+    source.includes('ctx.sidebarRightTabs.register('),
+  )
+  check(
+    '[8] ui-remote-host 的浏览器产物注册到官方 keyed seat sidebar.right.pane.tab',
+    source.includes('"sidebar.right.pane.tab"'),
+  )
+  check(
+    '[8] ui-remote-host 的浏览器产物声明须注入的官方服务',
+    ['"sidebarRightTabs"', '"sidebarRight"', '"slots"'].every((s) => source.includes(s)),
+  )
 }
 
 // ── 9. Manifest and shipped-file invariants ────────────────────────────────
@@ -301,8 +327,7 @@ check('[9] package.json 不含任何生命周期脚本', manifest.scripts === un
 // bare specifiers the vendored modules import. Enumerating it here (rather than
 // deriving it) means a dropped declaration is a hard failure, and family [13]
 // independently cross-checks the same set from the import sites.
-check(
-  '[9] dependencies 恰为 vendored 代码运行时依赖的全集',
+check('[9] dependencies 恰为 vendored 代码运行时依赖的全集',
   equalJson(Object.keys(manifest.dependencies ?? {}).sort(), [
     '@deepseek-ai/dsh-credentials',
     '@deepseek-ai/dsh-native-command',
@@ -311,7 +336,6 @@ check(
     '@deepseek-ai/dsh-typert-protocol',
     '@deepseek-ai/dsh-util-values',
     '@deepseek-ai/schemastery',
-    'schemastery',
     'ssh2',
     'ws',
     'zod',
@@ -326,7 +350,7 @@ check(
   equalJson(manifest.peerDependencies ?? {}, { '@deepseek-ai/cordis': '4.0.2' }),
   `实际: ${JSON.stringify(manifest.peerDependencies ?? {})}`,
 )
-check('[9] version === 0.3.0', manifest.version === '0.3.0')
+check('[9] version === 0.4.0', manifest.version === '0.4.0')
 check('[9] files 包含 LICENSE', manifest.files?.includes('LICENSE') === true)
 check('[9] files 包含 README.md', manifest.files?.includes('README.md') === true)
 check('[9] files 包含 vendor（内联产物必须随包发货）', manifest.files?.includes('vendor') === true)
@@ -405,13 +429,23 @@ for (const site of rewrittenSites) {
 const noticesPath = join(BUNDLE_DIR, 'THIRD-PARTY-NOTICES.md')
 check('[11] THIRD-PARTY-NOTICES.md 存在且非空', existsSync(noticesPath) && statSync(noticesPath).size > 0)
 const notices = existsSync(noticesPath) ? readFileSync(noticesPath, 'utf8') : ''
-check('[11] 声明 dsh-better-sidebar 的版本 0.19.1', notices.includes('0.19.1'))
-check('[11] 声明上游仓库地址 omdsh-dev/DSH-better-sidebar', notices.includes('omdsh-dev/DSH-better-sidebar'))
-check('[11] 内联 MIT 许可证全文（含 Copyright (c) 2026 dsh-external）', notices.includes('Copyright (c) 2026 dsh-external'))
 check('[11] 内联 MIT 许可证全文（含 AS IS 免责段）', notices.includes('WITHOUT WARRANTY OF ANY KIND'))
 check('[11] 记录了 8 处跨包 import 的改写', notices.includes('Rewrote cross-package bare imports (8 sites)'))
-const vendoredLicense = join(BUNDLE_DIR, 'vendor/better-sidebar/LICENSE')
-check('[11] vendor/better-sidebar/LICENSE 原文保留', existsSync(vendoredLicense) && readFileSync(vendoredLicense, 'utf8').includes('Copyright (c) 2026 dsh-external'))
+// The retired `dsh-better-sidebar` must no longer be presented as vendored. The
+// notices legitimately *mention* it when explaining why it was retired, so the
+// assertion targets the licence section and the directory table — the two
+// places that would otherwise tell a consumer this bundle still ships code it
+// does not contain — rather than the bare string.
+check(
+  '[11] 不再把 dsh-better-sidebar 列为内联第三方（0.4.0 已退役）',
+  /\| *`vendor\/better-sidebar\/`/u.test(notices) === false
+    && /Copyright \(c\) 2026 dsh-external/u.test(notices) === false,
+  'notices 仍把 dsh-better-sidebar 当作在包的第三方列出',
+)
+check(
+  '[11] notices 明确记录了 dsh-better-sidebar 于 0.4.0 退役',
+  notices.includes('BETTER-SIDEBAR-ROOTCAUSE.md'),
+)
 
 // ── 12. The retired 0.2.0 guard is gone ────────────────────────────────────
 // 0.2.0 inserted a guard row with `inject: ['remoteHosts']` so a dsh without the
@@ -487,9 +521,8 @@ const PLATFORM_PROVIDED = new Set(['react', 'react-dom', 'react/jsx-runtime', 'r
 // only each row's entry file under-reports: the defect this family exists for
 // lives two hops down.
 //
-// So the walk starts at the six real entry points and follows relative imports
+// So the walk starts at the five real entry points and follows relative imports
 // transitively, exactly as Node would. What it reaches is what must resolve.
-const stripComments = (src) => src.replace(/\/\*[\s\S]*?\*\//gu, '').replace(/(^|[^:])\/\/.*$/gmu, '$1')
 
 /**
  * Module specifiers a file actually imports, statement form only. A bare
@@ -559,20 +592,31 @@ check(
 )
 // Guard the walk itself: if the entry points ever stop being reachable the
 // assertion above would pass vacuously over an empty set.
-check('[13] 可达性遍历确实覆盖了 6 个 vendored 包的产物', reached.size >= 6)
+check('[13] 可达性遍历确实覆盖了 5 个 vendored 包的产物', reached.size >= 5)
 
 // The scoped fork and the native package are DIFFERENT packages with different
-// version lines. Declaring only one of them is the exact defect this family was
-// added for, so both must be present and resolvable.
+// version lines. 0.3.0 shipped the defect this family exists for: the vendored
+// ssh provider imports the SCOPED fork while the manifest declared the NATIVE
+// name, and the native name has no 3.18.2 to satisfy `^3.18.2`.
+//
+// In 0.4.0 only the scoped fork is imported at all: the native package was
+// pulled in by the retired `dsh-better-sidebar`, so it is declared nowhere and
+// must not reappear. The assertion is therefore the pair below — the fork is
+// declared, and the native name is not — and its version must stay satisfiable
+// by what is actually published.
 check('[13] 声明了 scoped fork @deepseek-ai/schemastery', declaredDeps.has('@deepseek-ai/schemastery'))
-check('[13] 声明了 native schemastery（better-sidebar 使用）', declaredDeps.has('schemastery'))
-// And the version bound must be satisfiable: native schemastery never published
-// a 3.18.2, so `^3.18.2` resolves to nothing while `^3.18.0` resolves to 3.18.0.
-const nativeRange = bundleManifest.dependencies?.schemastery ?? ''
 check(
-  '[13] native schemastery 的版本范围可满足（不含从未发布的 3.18.2）',
-  /^\^3\.18\.[01]$/u.test(nativeRange),
-  `实际: ${nativeRange}`,
+  '[13] 不再声明 native schemastery（其唯一使用者 dsh-better-sidebar 已退役）',
+  declaredDeps.has('schemastery') === false,
+  `实际声明: ${JSON.stringify(Object.keys(bundleManifest.dependencies ?? {}))}`,
+)
+// The fork is pinned exactly because `@deepseek-ai/dsh-settings` peers on that
+// exact version; a caret resolves past it and produces an unmet-peer warning.
+const forkPin = bundleManifest.dependencies?.['@deepseek-ai/schemastery'] ?? ''
+check(
+  '[13] scoped fork 精确钉在 3.18.2（满足 dsh-settings 的精确 peer）',
+  forkPin === '3.18.2',
+  `实际: ${forkPin}`,
 )
 // The notices document this dependency set for a human reader. If the manifest
 // and the document disagree, the document is what a consumer will believe, so
@@ -808,6 +852,120 @@ if (existsSync(nativeCommand)) {
     '[14] ssh provider 不再 import 从未发布的 openNativeTerminal',
     src.includes('openNativeTerminal') === false,
     '仍在使用该符号；已发布 dsh-native-command 不导出它，boot 会失败',
+  )
+}
+
+// ── 15. The insert is unconditional, and the boundary is documented ────────
+// This family exists because the desktop client reported two of our rows as
+// 「异常」 while three others ran, and the first attempt at a fix was WRONG in a
+// way that passed every static check — so the mechanism is pinned here in the
+// direction that actually holds.
+//
+// The facts, all measured rather than inferred:
+//
+//   * the include's insert branch is a bare `data.push(...insert)` with NO
+//     dedup (vendor/include/src/index.ts:93-95), and it appends into the SAME
+//     top-level array the host bundle wrote, so a host-declared id lands twice
+//     in one list;
+//   * `EntryGroup.update` throws on the duplicate BEFORE any `disabled` is read
+//     (vendor/loader/src/config/group.ts:59-66, rolling back at :70-78);
+//   * `loader.store` is only written by `create()` (group.ts:22-23), which runs
+//     AFTER that scan — so at the moment of the throw `store` is provably empty.
+//     Instrumenting the loader at the throw printed `storeKeys=[]` while the
+//     same `config` list held `remote-hosts` twice.
+//
+// Therefore a `disabled: !!js '... loader.store["<id>"] ...'` guard can never
+// fire: it reads an empty map and always evaluates to "not disabled". A first
+// version of this bundle shipped exactly that guard; `boot-smoke.mjs` then
+// failed on `duplicate loader entry id: remote-hosts` in a real boot while
+// every static assertion about the guards passed. The guards were removed.
+//
+// There is no condition-insert escape hatch: `PatchOptions`
+// (include/src/index.ts:145-160) has no delete/rename key, and a nested `group`
+// does not isolate ids because `Group` passes the parent tree
+// (vendor/loader/src/config/group.ts:119) — one shared namespace.
+//
+// So the assertions below pin the *design decision* instead of a mechanism:
+// no row carries a guard (keeping one would imply protection that does not
+// exist), and the structural facts that force this are re-checked against the
+// harness sources so a future change that WOULD make a guard viable is noticed.
+const guardedRows = insertRows.filter(row => isJsExpr(row.disabled))
+check(
+  '[15] 没有任何行携带 disabled 守卫（实测其求值时机晚于重复检查，无法让位）',
+  guardedRows.length === 0,
+  `不应存在守卫，实际: ${guardedRows.map(row => row.id).join(', ') || '无'}`,
+)
+
+// The one thing a guard could still do is kill the row on every host — assert
+// no row is disabled at all, literal or expression, in either form.
+const disabledRows = insertRows.filter(row => row.disabled !== undefined)
+check(
+  '[15] 没有任何行被 disabled（无论字面量还是 !!js，都不该出现）',
+  disabledRows.length === 0,
+  `意外 disabled: ${disabledRows.map(row => row.id).join(', ') || '无'}`,
+)
+
+// `loader.store` is written by `create()`, not at parse time. The structural
+// claim is about CALL ordering, not line ordering: `update` performs the
+// duplicate scan in its first loop and only then calls `create` for each row
+// (in the `Promise.allSettled(config.map(... => this.create(options)))` line).
+// So at the moment the throw happens, no row of the composed list has been
+// created yet and `store` holds only entries from the PREVIOUS update cycle —
+// which is why the instrumented boot printed an empty `storeKeys=[]`.
+//
+// Asserting "the store write appears after the throw" would be wrong: `create`
+// is defined above `update`. The meaningful halves are (a) the throw is in
+// `update`'s first loop, and (b) `create` — the sole writer — is invoked later
+// in the same method.
+const groupSource = existsSync(join(DSH, 'vendor/loader/src/config/group.ts'))
+  ? readFileSync(join(DSH, 'vendor/loader/src/config/group.ts'), 'utf8')
+  : ''
+if (groupSource !== '') {
+  const updateBody = groupSource.slice(groupSource.indexOf('async update('))
+  const throwIndex = updateBody.indexOf('duplicate loader entry id')
+  const createCallIndex = updateBody.indexOf('this.create(options)')
+  check(
+    '[15] group 的重复 id 检查仍先于任何 disabled 处理（故 disabled:true 救不了重复 id）',
+    throwIndex !== -1 && updateBody.includes('_disabled(') === false,
+  )
+  check(
+    '[15] 写入 loader.store 的 create() 仍在重复检查之后才被调用（守卫读到空表，必然恒为「不禁用」）',
+    throwIndex !== -1 && createCallIndex !== -1 && throwIndex < createCallIndex,
+  )
+  // `create` must still be the only place the map is populated; if a future
+  // loader pre-populated it from the composed list, a guard would become viable.
+  const beforeUpdate = groupSource.slice(0, groupSource.indexOf('async update('))
+  check(
+    '[15] loader.store 仍只由 create() 写入（没有「解析即入表」的提前填充）',
+    /this\.tree\.store\[id\] = /u.test(beforeUpdate) && beforeUpdate.includes('for (const options of config)') === false,
+  )
+}
+
+// The insert branch must still be an unconditional push with no dedup, and
+// still append to the same array. Both halves are what make the collision
+// unavoidable rather than merely likely.
+const includeSource = existsSync(join(DSH, 'vendor/include/src/index.ts'))
+  ? readFileSync(join(DSH, 'vendor/include/src/index.ts'), 'utf8')
+  : ''
+if (includeSource !== '') {
+  check(
+    '[15] insert 分支仍是无条件 data.push(...insert)（没有去重，故无法「不存在才插入」）',
+    /data\.push\(\.\.\.insert\)/u.test(includeSource),
+  )
+  const patchOptions = includeSource.slice(includeSource.indexOf('export interface PatchOptions'))
+  const body = patchOptions.slice(0, patchOptions.indexOf('}'))
+  check(
+    '[15] PatchOptions 仍无 delete/rename 之类的删除键（故无法先移除冲突行）',
+    /\b(delete|remove|rename)\s*\??:/u.test(body) === false,
+  )
+}
+
+// A nested group shares the tree, so wrapping the rows cannot dodge a collision.
+const groupPluginSource = groupSource !== '' ? groupSource.slice(groupSource.indexOf('export class Group')) : ''
+if (groupPluginSource !== '') {
+  check(
+    '[15] Group 仍传父树的 tree（嵌套 group 不能隔离 id，故包一层也躲不掉冲突）',
+    /parent\.tree/u.test(groupPluginSource),
   )
 }
 

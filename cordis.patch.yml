@@ -1,16 +1,73 @@
 # =============================================================================
-# dsh-remote-cluster v0.3.0 — remote-host 功能插件（自带实现 + Web 侧栏面板）
+# dsh-remote-cluster v0.4.0 — remote-host 功能插件（自带实现 + 官方右侧栏面板）
 #
-# 本层把 DSH 的整个「远程主机（remote-host）」子系统连同它依赖的 Web 侧栏
-# 工作台一起内联进本包，因此在**不含**该子系统的 dsh 上也能获得完整能力。
+# 本层把 DSH 的整个「远程主机（remote-host）」子系统内联进本包，因此在**不含**
+# 该子系统的 dsh 上也能获得完整能力；UI 侧不再自带任何侧栏实现，而是接入
+# dsh >= 0.1.7-rc.2 的**官方右侧栏**（@deepseek-ai/dsh-client-ui-sidebar-right）。
 #
-# 与 0.2.0 的根本区别：
-#   0.2.0 是一个「配置层 + 守卫」——它假定目标 dsh 已经自带 remote-host 子系统，
-#   只是把 base 的中性默认 hosts: [] 换成环境变量供给的集群清单，并 insert 一行
-#   守卫（inject: ['remoteHosts']）在子系统缺失时让 boot 响亮失败。
-#   0.3.0 是「功能插件」——子系统本身（5 个上游包）与它的 UI 依赖
-#   （dsh-better-sidebar）都由本包携带，不再假定目标 dsh 有它们。
-#   守卫因此退役（见文件末尾说明）。
+# ── 0.4.0 相对 0.3.0 的两处硬变更 ──────────────────────────────────────────
+#
+# 1) 退役自带的 better-sidebar。
+#    0.3.0 内联了 dsh-better-sidebar@0.19.1 作为右侧栏工作台，0.4.0 删除它，
+#    原因不是偏好而是**契约已经过期**：
+#
+#      `conversation.chat.turnTail` 在 0.1.7 前后换了契约 —— 旧契约是
+#      `kind: "chain"`（注册要 `options.select`），新契约是 `kind: "list"`
+#      （注册要 `options.id`）。better-sidebar@0.19.1 写的是旧契约：
+#      vendor/better-sidebar/lib/client.js:3491 用 `select` 注册、不带 `id`，
+#      于是在新宿主上抛
+#        interception error: list slot "conversation.chat.turnTail" requires options.id
+#      （抛点：@deepseek-ai/dsh-client-ui-slots/lib/index.js:182 的 `case "list"`）。
+#      对照 0.1.7-rc.2 官方 ui-deliverables/lib/client.js:2265 对同一插槽的注册已带 `id`。
+#      证据与推演见 _acc/BETTER-SIDEBAR-ROOTCAUSE.md。
+#
+#      即：这是**第三方插件对着旧宿主写的**，本包既不是引因也无法用配置绕开 ——
+#      一行的形状错了。上游 dsh-web-app@0.1.7-rc.2 自己也是这么处理的：
+#      它的 cordis.patch.yml 里 better-sidebar 与 remote-host 均已 0 命中，
+#      整体换成了官方 ui-sidebar 家族。
+#
+# 2) 明确边界：本层必须在**不含** remote-host 行的 dsh 上使用。
+#    0.3.0 假定目标 dsh 不含这些 id，直接 `insert`。insert 分支是
+#    `data.push(...insert)`（vendor/include/src/index.ts:93-95）—— **没有任何去重**，
+#    且插入的是**同一个顶层数组**，与该 bundle 自己写的行混在一起。若某个 bundle
+#    已经声明了同 id，这个数组里就有两行同 id，而 `EntryGroup.update` 在
+#    任何 `disabled` 生效**之前**就抛
+#      TypeError: duplicate loader entry id: <id>
+#    （vendor/loader/src/config/group.ts:59-66），并在 :70-78 回滚整个 group ——
+#    于是本层的整组行一起停摆，桌面端显示为「异常」。
+#
+#    ── 为什么不能「自动检测并让位」（已实测否定）────────────────────────────
+#    曾经尝试给每一行加 `disabled: !!js '... loader.store["<id>"] !== undefined ...'`，
+#    以为能在 id 已被占用时优雅让位。**这行不通**，原因是求值时机：
+#
+#      * `loader.store` 只在 `EntryGroup.create` 里写入（group.ts:22-23），
+#        而 `create` 发生在重复检查（:59-66）**之后**；
+#      * 实测插桩证明：抛 `duplicate loader entry id: remote-hosts` 的那一刻
+#        `Object.keys(loader.store)` 是 **`[]`** —— 空表。守卫读到的永远是
+#        `undefined`，于是恒为「不禁用」，一行都拦不住；
+#      * 同时 `config` 数组里可以看到 `remote-hosts` **出现两次**，即冲突来自
+#        同一个 `update()` 调用内的扁平数组，而非跨 group。
+#
+#    还有两条使其彻底不可行的约束：
+#      * `PatchOptions` 没有 delete/rename 之类的键（include/src/index.ts:145-160），
+#        所以无法「先删掉别人的行再插入自己的」；
+#      * 嵌套 `group` 也躲不掉 —— `Group` 传的是
+#        `ctx.fiber.entry!.parent.tree`（group.ts:119），**同一棵树**，
+#        id 命名空间与顶层共享。
+#
+#    结论：`insert` 是**无条件**的，patch 层面不存在「不存在才插入」。因此本包
+#    把适用条件写成硬约束（README「已知限制」第 1 条）：目标 dsh 的
+#    dsh-base / dsh-web-app 必须不声明这 5 个 id —— 已发布的 **npm 版**
+#    `dsh-base`/`dsh-web-app@0.1.7-rc.2` 正是如此（实测 grep 0 命中）。
+#    若在源码工作区（in-tree）里让本包与自带这些行的 bundle 同挂，
+#    重复 id 是**必然**的装配冲突，不是本 patch 的缺陷。
+#
+#    为什么不改用一个「不 insert 而是改已有行」的方案：非 insert 的 patch 在目标
+#    行缺失时只是 warning + skip（app-boot/src/index.ts:327-331 明确保证
+#    「one overlay shared across surfaces does not have to match every tree」），
+#    确实天然具备「不存在就跳过」的语义 —— 但它**只能修改已存在的行，不能新增**。
+#    在目标 dsh 完全没有这些行时（本包的主要场景），它将什么都不提供。
+#    两种语义互斥，本包选择了「提供」（insert），并接受其适用边界。
 #
 # ── 装配方式：为什么用 `./vendor/...` 相对名，而不是裸包名 ──────────────────
 # 这 5 个上游包**在 npm 上不存在**（`npm view @deepseek-ai/dsh-host-remote-host`
@@ -26,11 +83,11 @@
 # 相对字面量，所以在任何机器上 clone、装进任何 profile，重写出来的都是那台机器
 # 上的正确绝对路径 —— 跨机可移植。
 #
-# 同时，`locatePkgJson`（packages/client/modules/src/index.ts:786-820）对
-# pathLike 的名字走 `nearestPackage`（:823-847）向上找最近的 package.json，且
-# expectedPackageName 为 undefined，因此 `vendor/ui-remote-host/package.json`
-# 与 `vendor/better-sidebar/package.json` 能被 client-modules 发现，浏览器
-# bundle 也就随之被投递（`exports["./client"]`）。
+# ── UI 侧的行 ─────────────────────────────────────────────────────────────
+# `ui-remote-host` 的客户端已从 better-sidebar 迁到官方契约：服务 `sidebarRightTabs`
+# 注册 tab 类型，`sidebar.right.pane.tab` / `.title` 两个 keyed seat 注册面板本体与
+# 标题，`sidebarRight.openTab(kind, ...)` 打开。因此本层**不再需要**任何自带的
+# 侧栏行 —— 官方 sidebar 家族由目标 dsh 的 dsh-web-app 提供，我们只做消费者。
 #
 # ── 跨包 import 的处理 ─────────────────────────────────────────────────────
 # remote-host-ssh / tool-remote-host / remote-host-controller 的产物里原本有
@@ -39,32 +96,29 @@
 # vendor 时已被改写成指向同级 `vendor/host-remote-host/lib/index.js` 的相对路径
 # （8 处，见 THIRD-PARTY-NOTICES.md）。除这些改写外，产物逐字节保持上游原样。
 #
-# ── 顺序 ───────────────────────────────────────────────────────────────────
-# `better-sidebar` 必须排在 `ui-remote-host` 之前：后者的 dsh.client.inject
-# 声明了 `dsh-better-sidebar`（packages/client/ui-remote-host/src/client 里
-# `inject = ['locale', 'betterSidebar', 'remote', 'remote.remoteHosts']`），
-# 客户端模块图要求被 inject 的行先到达。缺了它，该 entry 会停在 pending，
-# 而 `assertEntriesActive`（packages/client/web/src/boot.ts:138-158）会让整页
-# 白屏（`web boot: 1 entry did not activate`）。
-#
 # ── 层位 ───────────────────────────────────────────────────────────────────
 # out-of-tree bundle 由 reconcile 追加到 `dsh.profile.bundles` 末尾，因此在
 # in-box bundle（dsh-base / dsh-web-app）之后生效，同 id 行后者胜
 # （vendor/include/src/index.ts:110-124）；用户自己的 profile patch 仍在本层之上。
 #
 # ── 本层刻意不做的事 ───────────────────────────────────────────────────────
+#   * 不声明任何 `disabled` 守卫。曾尝试用行级 `!!js disabled` 实现「id 已被占用
+#     就让位」，实测无效（见文件头第 2 条的插桩证据）—— 保留它只会造成
+#     「已经防住了」的错觉。适用边界改由文档明示。
 #   * 不声明 `tool-remote-host` 的 disabled —— 上游 base 启用它，web-app 故意
 #     disabled: true（packages/bundle/web-app/cordis.patch.yml:351-352）并改由
-#     standard preset 启用。本层 insert 的行 id 都是新的，不会覆盖那个 disabled。
+#     standard preset 启用。那种「覆盖已有行」的场景恰恰是非 insert patch 的
+#     正确用法；本层不涉及，因为本层的行在目标 dsh 上都还不存在。
 #   * config 是「整体替换」而非 merge（vendor/include/src/index.ts:121-124），
 #     所以 remote-hosts-ssh 的四个键必须一次写全。
 #
-# `!!js` 三元表达式必须加引号：不加引号时表达式里的 ": " 会被 YAML 当成键分隔符，
+# `!!js` 表达式必须加引号：不加引号时表达式里的 ": " 会被 YAML 当成键分隔符，
 # 配置被静默解析成一个 mapping（不报错，属于最难排查的一类问题）。单引号与双引号等价。
+# 表达式里不用反引号与箭头函数，统一用 typeof 兜底 + 字符串下标，兼容性最好。
 # =============================================================================
 - insert:
     # 远程主机注册表与执行能力接缝（提供 `remoteHosts` 服务）。
-    # 上游 id `remote-hosts`；已发布的 dsh-base@0.1.5-rc.3 不含此行（空闲 id）。
+    # 上游 id `remote-hosts`。适用边界见文件头第 2 条。
     - id: remote-hosts
       name: ./vendor/host-remote-host/lib/index.js
 
@@ -84,7 +138,7 @@
         maxTransferBytes: 268435456
 
     # Typert Remote 投影：把已配置主机、基本事实与用户驱动的认证暴露给浏览器。
-    # 上游 id `remote-host-controller`；发布版 dsh-web-app@0.1.5-rc.3 不含此行。
+    # 上游 id `remote-host-controller`。
     - id: remote-host-controller
       name: ./vendor/remote-host-controller/lib/index.js
 
@@ -92,12 +146,7 @@
     - id: tool-remote-host
       name: ./vendor/tool-remote-host/lib/index.js
 
-    # VS Code 式右侧栏工作台，提供 `betterSidebar` 服务。
-    # 内联自 dsh-better-sidebar@0.19.1（MIT，见 vendor/better-sidebar/LICENSE
-    # 与 THIRD-PARTY-NOTICES.md）。必须排在 ui-remote-host 之前。
-    - id: better-sidebar
-      name: ./vendor/better-sidebar/lib/index.js
-
-    # 远程主机面板（Web 侧栏）。消费 `betterSidebar`、`remote`、`remote.remoteHosts`。
+    # 远程主机面板（Web 官方右侧栏）。消费 `sidebarRightTabs` / `sidebarRight` /
+    # `remote` / `remote.remoteHosts`，注册 kind `remote-hosts` 的 tab 类型。
     - id: ui-remote-host
       name: ./vendor/ui-remote-host/lib/index.js
