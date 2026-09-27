@@ -80,13 +80,32 @@ DSH profile 的层序（后者胜，同 id 行逐层覆盖）
 
 ## 📦 安装
 
-### 1. GitHub 简写（推荐，最短）
+### 🖥️ 方式 A：桌面客户端（图形界面，无需命令行）
+
+最新的 DSH 桌面客户端内置了插件安装入口，给出三个来源字段，**任选其一**填写：
+
+| 字段 | 填入内容 | 状态 |
+|---|---|---|
+| **GitHub 仓库地址** | `https://github.com/ZhaXionghui/dsh-remote-cluster` | ✅ 可用 |
+| **本地插件目录** | 克隆到本机的绝对路径，如 `D:\Dev\dsh-remote-cluster` | ✅ 可用 |
+| **包名** | `dsh-remote-cluster` | ⚠️ 尚未发布到 npm |
+
+> **关于「包名」字段**：本 bundle 目前**只发 GitHub，未发 npm**
+> （`npm view dsh-remote-cluster` 返回 404）。要让包名方式可用，需要先
+> `npm login` 再 `npm publish`——在那之前请填上面两个字段之一。
+>
+> 已经克隆过仓库的话，**本地插件目录**最省事：改完源码重启客户端即生效，
+> 不必提交、不必等 registry。
+
+### 方式 B：命令行
+
+#### 1. GitHub 简写（推荐，最短）
 
 ```bash
 dsh plugin --profile <profile名> add github:ZhaXionghui/dsh-remote-cluster
 ```
 
-### 2. 完整 git URL（GitCode 镜像 / 需要显式 URL 时）
+#### 2. 完整 git URL（GitCode 镜像 / 需要显式 URL 时）
 
 ```bash
 # GitHub
@@ -96,20 +115,20 @@ dsh plugin --profile <profile名> add git+https://github.com/ZhaXionghui/dsh-rem
 dsh plugin --profile <profile名> add git+https://gitcode.com/ZhaXionghui/dsh-remote-cluster.git
 ```
 
-### 3. 本地路径（改本 bundle 源码后即时验证）
+#### 3. 本地路径（改本 bundle 源码后即时验证）
 
 ```bash
-dsh plugin --profile <profile名> add file:/绝对路径/dsh-remote-cluster
-# 等价：file:/绝对路径/dsh-remote-cluster
+# Windows 示例；macOS / Linux 用对应的绝对路径
+dsh plugin --profile <profile名> add file:D:/Dev/dsh-remote-cluster
 ```
 
-### 4. npm 包名（本包发布到 registry 之后）
+#### 4. npm 包名（本包发布到 registry 之后）
 
 ```bash
 dsh plugin --profile <profile名> add dsh-remote-cluster
 ```
 
-### `#` 后面接什么
+#### `#` 后面接什么
 
 如果目标环境的网络需要，可以指定分支、标签或提交：
 
@@ -124,7 +143,7 @@ dsh plugin --profile <profile名> add github:ZhaXionghui/dsh-remote-cluster#v0.3
 - **零构建脚本**——`package.json` 里没有 `scripts`，没有东西可被 pnpm ≥ 10 的构建授权闸门拦下；
 - **产物已经随包发货**——`vendor/` 下的 `.js` 就是最终运行时产物，不需要在安装时编译。
 
-所以四种安装形态都是**一条命令一步装完**。
+所以上面几种安装形态都是**一条命令一步装完**。
 
 > ⚠️ 维护者注意：`package.json` 的 `files` **必须**包含 `vendor/`。npm/git 打包只带 `files` 明确列出的路径，漏了 `vendor/` 就会发一个只有 patch、没有任何实现的空壳。
 
